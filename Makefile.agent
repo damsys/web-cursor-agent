@@ -1,0 +1,20 @@
+.PHONY: help deps build test fmt
+
+help:
+	@printf '%s\n' \
+		'deps   npm からフロントエンドの依存パッケージを取得する' \
+		'build  取得したパッケージのブラウザ向け成果物を配信ディレクトリへコピーする' \
+		'test   配信ディレクトリの内容が取得物と一致することを確認する' \
+		'fmt    web/scripts を整形する'
+
+deps:
+	mise exec -- npm ci --prefix web
+
+build: deps
+	mise exec -- npm run build --prefix web
+
+test: build
+	mise exec -- npm test --prefix web
+
+fmt: deps
+	mise exec -- npm run fmt --prefix web

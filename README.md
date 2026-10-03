@@ -17,6 +17,15 @@
 
 - 本システムは POSIX システム上で動作する。特に Windows 環境では WSL 環境を前提とする。
 - Cursor CLI (`agent`) がインストールされているものとする。
+- フロントエンド資産の取得には Node.js を使う。バージョンは `mise.toml` で固定する。
+
+## フロントエンド資産
+
+端末表示には [@xterm/xterm](https://www.npmjs.com/package/@xterm/xterm) と [@xterm/addon-fit](https://www.npmjs.com/package/@xterm/addon-fit) を使う。npm が配布するブラウザ向け成果物をビルド時に取得し、内容を変えずに `web/dist/vendor/` へコピーする。バージョン、配布 URL、整合性ハッシュは `web/package-lock.json` に記録される。
+
+```bash
+make -f Makefile.agent build
+```
 
 ## 利用パターン
 
