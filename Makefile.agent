@@ -1,20 +1,37 @@
-.PHONY: help deps build test fmt
+.PHONY: help deps build test fmt web-deps web-build web-test web-fmt go-build go-test go-fmt
 
 help:
 	@printf '%s\n' \
 		'deps   npm からフロントエンドの依存パッケージを取得する' \
-		'build  取得したパッケージのブラウザ向け成果物を配信ディレクトリへコピーする' \
-		'test   配信ディレクトリの内容が取得物と一致することを確認する' \
-		'fmt    web/scripts を整形する'
+		'build  画面用資産の配置とサーバのビルドを行う' \
+		'test   フロントエンド資産と Go のテストを実行する' \
+		'fmt    スクリプトと Go のソースを整形する'
 
-deps:
+deps: web-deps
+
+build: web-build go-build
+
+test: web-test go-test
+
+fmt: web-fmt go-fmt
+
+web-deps:
 	mise exec -- npm ci --prefix web
 
-build: deps
+web-build: web-deps
 	mise exec -- npm run build --prefix web
 
-test: build
+web-test: web-build
 	mise exec -- npm test --prefix web
 
-fmt: deps
+web-fmt: web-deps
 	mise exec -- npm run fmt --prefix web
+
+go-fmt:
+	mise exec -- gofmt -w cmd internal
+
+go-test:
+	mise exec -- go test ./...
+
+go-build:
+	mise exec -- go build -o bin/web-cursor-agent ./cmd/web-cursor-agent

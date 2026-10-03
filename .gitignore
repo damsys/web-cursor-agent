@@ -1,2 +1,6 @@
 web/node_modules/
 web/dist/
+bin/
+var/
+config.yaml
+users.yaml

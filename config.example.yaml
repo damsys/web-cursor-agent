@@ -1,0 +1,25 @@
+# 待受アドレス。LAN 内の端末から接続できるよう、全インターフェースで待つ。
+listen: "0.0.0.0:8787"
+
+# ユーザー定義。user upsert が作成する。
+users_file: "users.yaml"
+
+# ユーザーごとの Cursor 認証とチャット履歴を置くディレクトリ。
+state_dir: "var"
+
+# Cursor CLI のコマンド名または絶対パス。
+agent_command: "agent"
+
+# 画面ファイルのあるディレクトリ。static と dist/vendor をここから配信する。
+web_dir: "web"
+
+# サーバの NIC と同一サブネット、loopback に加えて許可する接続元。
+allow_cidrs: []
+
+# 接続元 MAC を確認する。WSL2 の NAT ではクライアントの MAC を観測できないため false にする。
+mac_check: true
+
+projects:
+  - id: sample
+    name: sample
+    path: /path/to/project

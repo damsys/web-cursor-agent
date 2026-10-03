@@ -27,6 +27,49 @@
 make -f Makefile.agent build
 ```
 
+## ユーザーの追加
+
+1. 依存ツールを入れ、サーバと画面用ファイルを作る。
+
+```bash
+mise install
+make -f Makefile.agent build
+```
+
+2. 設定ファイルを用意し、プロジェクトのディレクトリを書く。
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+3. ユーザーを追加する。パスワードはプロンプトで入力する。`--mac` は複数回指定できる。
+
+```bash
+bin/web-cursor-agent user upsert --config config.yaml --username alice --mac aa:bb:cc:dd:ee:ff
+```
+
+MAC アドレスは、スマートフォンの設定か、無線 LAN ルーターの接続クライアント一覧で確認する。サーバが接続元の MAC を観測できる環境 (Linux や WSL のミラーモード) では、登録したアドレス以外からのログインを拒否する。WSL2 の NAT ではスマートフォンの MAC を観測できないので、`config.yaml` の `mac_check` を `false` にする。パスワードと同一セグメントの制限は残る。
+
+4. そのユーザーの Cursor アカウントで CLI にログインする。
+
+```bash
+bin/web-cursor-agent cursor-login --config config.yaml --username alice
+```
+
+ブラウザを開かず URL だけ出す場合は、先頭に `NO_OPEN_BROWSER=1` を付けて実行する。API キーを使う場合は、ログインの代わりに `var/cursor/alice/api_key` へキーを 1 行で書き、権限を `600` にする。
+
+5. サーバを起動する。
+
+```bash
+bin/web-cursor-agent serve --config config.yaml
+```
+
+6. 同じネットワークのブラウザで `http://<サーバのアドレス>:8787` を開き、追加したユーザーでログインする。
+
+パスワードや MAC アドレスを変更するときも、同じ `user upsert` を使う。`--mac` を省略すると、登録済みの MAC アドレスは維持される。リストを空にするときは `--clear-macs` を付ける。
+
+設計の詳細は [README.design.md](README.design.md) にまとめてある。
+
 ## 利用パターン
 
 1. モバイル端末から Web ブラウザーを開き、サイトにアクセスする。

@@ -1,0 +1,237 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #171c24;
+  --text: #e8edf5;
+  --muted: #9aa6b8;
+  --line: #2a3342;
+  --accent: #7aa2f7;
+  --danger: #f7768e;
+  --float: rgba(23, 28, 36, 0.62);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  touch-action: manipulation;
+}
+
+#app {
+  min-height: 100%;
+}
+
+.screen {
+  min-height: 100dvh;
+  padding: calc(16px + env(safe-area-inset-top)) 16px
+    calc(16px + env(safe-area-inset-bottom));
+}
+
+.narrow {
+  max-width: 32rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.8rem;
+}
+
+label span {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--muted);
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 0.7rem 0.8rem;
+  font-size: 16px;
+}
+
+textarea {
+  min-height: 5.5rem;
+  resize: none;
+}
+
+.primary,
+.secondary,
+.card {
+  border: 0;
+  border-radius: 12px;
+}
+
+.primary,
+.secondary {
+  min-height: 44px;
+  padding: 0.6rem 1rem;
+}
+
+.primary {
+  background: var(--accent);
+  color: #0e1116;
+  font-weight: 700;
+}
+
+.secondary {
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0.9rem 1rem;
+}
+
+.card strong,
+.card span {
+  display: block;
+}
+
+.card span,
+.meta {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.error {
+  color: var(--danger);
+  min-height: 1.2rem;
+}
+
+.terminal-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: calc(8px + env(safe-area-inset-top)) 8px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bar h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+}
+
+.term-wrap .xterm {
+  height: 100%;
+}
+
+.composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.composer textarea {
+  flex: 1;
+}
+
+.floats {
+  position: fixed;
+  right: 12px;
+  bottom: calc(132px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(3, 52px);
+  grid-template-areas:
+    ". up ."
+    "left down right"
+    "enter enter enter"
+    "hide hide hide";
+  gap: 8px;
+  padding: 10px;
+  border-radius: 16px;
+  background: var(--float);
+  backdrop-filter: blur(8px);
+}
+
+.floats .up {
+  grid-area: up;
+}
+
+.floats .left {
+  grid-area: left;
+}
+
+.floats .down {
+  grid-area: down;
+}
+
+.floats .right {
+  grid-area: right;
+}
+
+.floats button {
+  height: 52px;
+  border: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.floats .enter,
+.floats .hide {
+  grid-column: 1 / -1;
+}
+
+.floats.is-hidden {
+  display: none;
+}

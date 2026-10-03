@@ -9,8 +9,8 @@
   "scripts": {
     "build": "node scripts/copy-assets.js",
     "test": "node scripts/verify-assets.js",
-    "fmt": "prettier --write scripts",
-    "fmt:check": "prettier --check scripts"
+    "fmt": "prettier --write scripts static",
+    "fmt:check": "prettier --check scripts static"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",
