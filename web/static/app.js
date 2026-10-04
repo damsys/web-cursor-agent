@@ -277,6 +277,8 @@ function renderTerminal(projectId, chatId) {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    // 長い対話でも上方向へ遡れるよう、既定より広く保持する。
+    scrollback: 10000,
     theme: { background: "#0e1116" },
   });
   const fit = new FitAddon.FitAddon();
@@ -288,7 +290,14 @@ function renderTerminal(projectId, chatId) {
     `${protocol}//${location.host}/ws/terminal?project=${encodeURIComponent(projectId)}${chat}`,
   );
   socket.binaryType = "arraybuffer";
-  terminalSession = { term, fit, socket, route, hidden: false };
+  terminalSession = {
+    term,
+    fit,
+    socket,
+    route,
+    hidden: false,
+    unbindTouchScroll: bindTerminalTouchScroll(term, termElement),
+  };
   fitTerminal();
   new ResizeObserver(() => fitTerminal()).observe(termElement);
   socket.addEventListener("open", () => fitTerminal());
@@ -364,6 +373,45 @@ function onTerminalKeydown(event) {
   sendInput(sequence);
 }
 
+// xterm.js 6.0.0 はタッチでのバッファスクロールが動かないため、
+// 縦ドラッグ量を公開 API の scrollToLine に変換して履歴を遡れるようにする。
+function bindTerminalTouchScroll(term, element) {
+  let startY = null;
+  let startViewportY = 0;
+  const onTouchStart = (event) => {
+    if (event.touches.length !== 1) {
+      startY = null;
+      return;
+    }
+    startY = event.touches[0].clientY;
+    startViewportY = term.buffer.active.viewportY;
+  };
+  const onTouchMove = (event) => {
+    if (startY === null || event.touches.length !== 1) {
+      return;
+    }
+    const rowHeight = element.clientHeight / term.rows;
+    if (!(rowHeight > 0)) {
+      return;
+    }
+    const deltaLines = (startY - event.touches[0].clientY) / rowHeight;
+    term.scrollToLine(Math.round(startViewportY + deltaLines));
+  };
+  const onTouchEnd = () => {
+    startY = null;
+  };
+  element.addEventListener("touchstart", onTouchStart, { passive: true });
+  element.addEventListener("touchmove", onTouchMove, { passive: true });
+  element.addEventListener("touchend", onTouchEnd, { passive: true });
+  element.addEventListener("touchcancel", onTouchEnd, { passive: true });
+  return () => {
+    element.removeEventListener("touchstart", onTouchStart);
+    element.removeEventListener("touchmove", onTouchMove);
+    element.removeEventListener("touchend", onTouchEnd);
+    element.removeEventListener("touchcancel", onTouchEnd);
+  };
+}
+
 function fitTerminal() {
   if (!terminalSession) {
     return;
@@ -404,6 +452,7 @@ function destroyTerminal() {
   if (!terminalSession) {
     return;
   }
+  terminalSession.unbindTouchScroll();
   terminalSession.socket.close();
   terminalSession.term.dispose();
   terminalSession = null;

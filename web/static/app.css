@@ -167,6 +167,8 @@ textarea {
   flex: 1;
   min-height: 0;
   padding: 4px;
+  /* 端末領域の縦ドラッグをブラウザのページスクロールではなく履歴遡りに使う。 */
+  touch-action: none;
 }
 
 .term-wrap .xterm {
