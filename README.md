@@ -115,11 +115,41 @@ make -f Makefile.agent install-service
 systemctl --user status web-cursor-agent
 ```
 
-停止だけするときは `systemctl --user stop web-cursor-agent`、常駐ごと外すときは次を使う。linger は他用途の可能性があるため外さない。不要なら手動で `sudo loginctl disable-linger "$USER"` する。
+停止・無効化・更新の手順は後述する。
+
+### サービスの停止
+
+一時的に止めるだけなら、WSL 内で次を実行する。PC を再起動すると、linger と有効化が残っているため再び起動する。
+
+```bash
+systemctl --user stop web-cursor-agent
+```
+
+再起動後も自動起動させたくないときは、無効化してから止める。
+
+```bash
+systemctl --user disable --now web-cursor-agent
+```
+
+常駐設定ごと外すときは次を使う。linger は他用途の可能性があるため外さない。不要なら手動で `sudo loginctl disable-linger "$USER"` する。Windows 側の WSL keep-alive も不要なら `unregister-wsl-autostart.ps1` を実行する。
 
 ```bash
 make -f Makefile.agent uninstall-service
 ```
+
+### アプリケーションの更新
+
+リポジトリ直下でソースを取り込み、ビルドし直してからサービスを上げ直す。`config.yaml` と `users.yaml`、`var/` はそのまま使う。
+
+```bash
+git pull
+mise install
+make -f Makefile.agent build
+systemctl --user restart web-cursor-agent
+systemctl --user status web-cursor-agent
+```
+
+unit テンプレート (`deploy/systemd/web-cursor-agent.user.service`) やインストール手順が変わったときだけ、再ビルドのあとに `make -f Makefile.agent install-service` をやり直す。Windows の登録スクリプトが変わったときだけ、`register-wsl-autostart.ps1` を再実行する。
 
 ### Windows 側 (ログイン前起動)
 
