@@ -43,6 +43,7 @@ go-build:
 	mise exec -- go build -o bin/web-cursor-agent ./cmd/web-cursor-agent
 
 # ログイン前でも user サービスを起動できるよう linger を有効にし、unit を配置して有効化する。
+# enable-linger は root 権限が必要。polkit エージェントが無い WSL では sudo を使う。
 install-service:
 	@test -x "$(REPO_ROOT)/bin/web-cursor-agent" || { \
 		echo "error: missing executable: $(REPO_ROOT)/bin/web-cursor-agent (run make -f Makefile.agent build)" >&2; \
@@ -55,7 +56,10 @@ install-service:
 	mkdir -p "$(HOME)/.config/systemd/user"
 	sed 's|@REPO_ROOT@|$(REPO_ROOT)|g' "$(UNIT_SRC)" > "$(UNIT_DST)"
 	systemctl --user daemon-reload
-	loginctl enable-linger "$(USER)"
+	@if [ "$$(loginctl show-user "$(USER)" -p Linger --value 2>/dev/null)" != "yes" ]; then \
+		echo "enabling linger for $(USER) (sudo may ask for a password)"; \
+		sudo loginctl enable-linger "$(USER)"; \
+	fi
 	systemctl --user enable --now web-cursor-agent.service
 	@systemctl --user --no-pager --full status web-cursor-agent.service || true
 

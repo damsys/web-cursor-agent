@@ -108,14 +108,14 @@ PC 起動後にサーバを自動で待受状態にするため、次の二段�
 
 ### WSL 側
 
-リポジトリ直下で次を実行する。unit を `~/.config/systemd/user/` へ置き、`loginctl enable-linger` でログイン前でも user サービスを起動できるようにし、すぐ有効化する。
+リポジトリ直下で次を実行する。unit を `~/.config/systemd/user/` へ置き、`sudo loginctl enable-linger` でログイン前でも user サービスを起動できるようにし、すぐ有効化する。linger の有効化では sudo のパスワードを求められることがある。
 
 ```bash
 make -f Makefile.agent install-service
 systemctl --user status web-cursor-agent
 ```
 
-停止だけするときは `systemctl --user stop web-cursor-agent`、常駐ごと外すときは次を使う。linger は他用途の可能性があるため外さない。不要なら手動で `loginctl disable-linger "$USER"` する。
+停止だけするときは `systemctl --user stop web-cursor-agent`、常駐ごと外すときは次を使う。linger は他用途の可能性があるため外さない。不要なら手動で `sudo loginctl disable-linger "$USER"` する。
 
 ```bash
 make -f Makefile.agent uninstall-service
@@ -129,6 +129,8 @@ WSL は Windows 側が起動しないと distro が起きない。所有者の W
 cd \\wsl$\Debian\home\<user>\workspace\web-cursor-agent\deploy\windows
 powershell -ExecutionPolicy Bypass -File .\register-wsl-autostart.ps1
 ```
+
+S4U 登録がアクセス拒否されるのはよくある。その場合はパスワード入力に進む。パスワード経路でもアクセス拒否になるときは、管理者として開いた PowerShell で同じコマンドを実行する。
 
 確認は次のとおり。
 

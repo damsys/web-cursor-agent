@@ -1,10 +1,9 @@
-# register-wsl-autostart.ps1 が作った WSL keep-alive タスクを削除する。
+﻿# Remove the WSL keep-alive task created by register-wsl-autostart.ps1.
 [CmdletBinding()]
 param(
     [string]$TaskName = "web-cursor-agent-wsl"
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue

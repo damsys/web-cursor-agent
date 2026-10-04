@@ -1,5 +1,6 @@
-# WSL distro を Windows 起動時に起こし、systemd user サービスが動ける状態を維持する。
-# 既定はログイン前起動 (AtStartup)。動かない場合は -AtLogOn でフォールバックする。
+﻿# Keep the WSL distro alive at Windows startup so systemd user services can run.
+# Default trigger is AtStartup (before interactive logon). Use -AtLogOn as fallback.
+# If registration returns Access Denied, run this script from an elevated PowerShell.
 [CmdletBinding()]
 param(
     [string]$Distro = "Debian",
@@ -8,7 +9,6 @@ param(
     [switch]$AtLogOn
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Resolve-WslExecutable {
@@ -24,8 +24,22 @@ function Resolve-WslExecutable {
     throw "wsl.exe was not found. Install or update WSL first."
 }
 
+function ConvertFrom-SecureStringPlain {
+    param(
+        [Parameter(Mandatory = $true)]
+        [SecureString]$Secure
+    )
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
 $wsl = Resolve-WslExecutable
 $argument = "-d $Distro -u root -- sleep infinity"
+$description = "Keep WSL distro '$Distro' running so web-cursor-agent can autostart."
 
 if ($AtLogOn) {
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
@@ -53,8 +67,7 @@ if ($null -ne $existing) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-# パスワードを保存せずログイン無し実行を試す (S4U)。失敗したらパスワード入力へフォールバックする。
-$registered = $false
+# Try password-less S4U first; on failure, register with a stored password.
 try {
     $principal = New-ScheduledTaskPrincipal `
         -UserId "$env:USERDOMAIN\$env:USERNAME" `
@@ -66,23 +79,16 @@ try {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "Keep WSL distro '$Distro' running so web-cursor-agent can autostart." `
+        -Description $description `
         | Out-Null
-    $registered = $true
     Write-Host "Registered task '$TaskName' with LogonType=S4U ($modeLabel)."
 } catch {
     Write-Warning "S4U registration failed: $($_.Exception.Message)"
     Write-Warning "Retrying with a stored password (Run whether user is logged on or not)."
-}
+    Write-Warning "If this also fails with Access Denied, re-run from an elevated PowerShell."
 
-if (-not $registered) {
     $secure = Read-Host -AsSecureString -Prompt "Password for $env:USERDOMAIN\$env:USERNAME"
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try {
-        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
+    $plain = ConvertFrom-SecureStringPlain -Secure $secure
 
     Register-ScheduledTask `
         -TaskName $TaskName `
@@ -91,7 +97,7 @@ if (-not $registered) {
         -User "$env:USERDOMAIN\$env:USERNAME" `
         -Password $plain `
         -Settings $settings `
-        -Description "Keep WSL distro '$Distro' running so web-cursor-agent can autostart." `
+        -Description $description `
         | Out-Null
     Write-Host "Registered task '$TaskName' with stored password ($modeLabel)."
 }
