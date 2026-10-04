@@ -3,7 +3,6 @@ const app = document.querySelector("#app");
 let me = null;
 let projects = [];
 let terminalSession = null;
-let suppressHash = false;
 
 document.addEventListener("DOMContentLoaded", () => {
   syncViewport();
@@ -48,17 +47,7 @@ async function boot() {
 }
 
 function onHashChange() {
-  if (suppressHash) {
-    suppressHash = false;
-    return;
-  }
   if (terminalSession && parseRoute().name !== "terminal") {
-    const stay = !window.confirm("セッションを終了して戻りますか？");
-    if (stay) {
-      suppressHash = true;
-      location.hash = terminalSession.route;
-      return;
-    }
     destroyTerminal();
   }
   if (!me) {
@@ -193,6 +182,7 @@ async function renderSessions(projectId) {
       <div class="bar" style="padding:0 0 12px; border:0">
         <button class="secondary" id="back" type="button">戻る</button>
         <h1></h1>
+        <a class="top-link" href="#/projects">トップ</a>
       </div>
       <div class="stack">
         <button class="primary" id="new-session" type="button">新しいセッション</button>
@@ -252,12 +242,14 @@ function renderTerminal(projectId, chatId) {
       <div class="bar">
         <button class="secondary" id="back" type="button">戻る</button>
         <h1></h1>
+        <a class="top-link" href="#/projects">トップ</a>
       </div>
       <div class="term-wrap" id="term"></div>
       <form class="composer" id="composer">
         <textarea id="draft" placeholder="メッセージ"></textarea>
         <button class="primary" type="submit">送信</button>
       </form>
+      <button class="scroll-bottom is-hidden" id="scroll-bottom" type="button">末尾にスクロール</button>
       <div class="floats" id="floats">
         <button class="hide" id="hide-floats" type="button" aria-label="操作キーを隠す">×</button>
         <button class="up" type="button" data-key="up">↑</button>
@@ -273,6 +265,7 @@ function renderTerminal(projectId, chatId) {
     location.hash = `#/projects/${encodeURIComponent(projectId)}`;
   });
   const termElement = document.querySelector("#term");
+  const scrollBottom = document.querySelector("#scroll-bottom");
   const term = new Terminal({
     cursorBlink: true,
     fontSize: 14,
@@ -290,6 +283,18 @@ function renderTerminal(projectId, chatId) {
     `${protocol}//${location.host}/ws/terminal?project=${encodeURIComponent(projectId)}${chat}`,
   );
   socket.binaryType = "arraybuffer";
+  const syncScrollBottom = () => {
+    const buffer = term.buffer.active;
+    // 末尾より上へ遡っているときだけ、末尾へ戻る導線を出す。
+    scrollBottom.classList.toggle(
+      "is-hidden",
+      buffer.viewportY >= buffer.baseY,
+    );
+  };
+  const scrollDisposable = term.onScroll(syncScrollBottom);
+  scrollBottom.addEventListener("click", () => {
+    term.scrollToBottom();
+  });
   terminalSession = {
     term,
     fit,
@@ -297,8 +302,10 @@ function renderTerminal(projectId, chatId) {
     route,
     hidden: false,
     unbindTouchScroll: bindTerminalTouchScroll(term, termElement),
+    disposeScroll: () => scrollDisposable.dispose(),
   };
   fitTerminal();
+  syncScrollBottom();
   new ResizeObserver(() => fitTerminal()).observe(termElement);
   socket.addEventListener("open", () => fitTerminal());
   socket.addEventListener("message", (event) => {
@@ -453,6 +460,7 @@ function destroyTerminal() {
     return;
   }
   terminalSession.unbindTouchScroll();
+  terminalSession.disposeScroll();
   terminalSession.socket.close();
   terminalSession.term.dispose();
   terminalSession = null;

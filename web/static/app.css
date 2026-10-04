@@ -163,6 +163,17 @@ textarea {
   white-space: nowrap;
 }
 
+.top-link {
+  flex-shrink: 0;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.4rem 0.6rem;
+}
+
+.top-link:hover {
+  color: var(--text);
+}
+
 .term-wrap {
   flex: 1;
   min-height: 0;
@@ -249,5 +260,22 @@ textarea {
 }
 
 .floats.is-hidden {
+  display: none;
+}
+
+.scroll-bottom {
+  position: fixed;
+  left: calc(8px + env(safe-area-inset-left));
+  bottom: calc(8px + 5.5rem + 24px + env(safe-area-inset-bottom));
+  z-index: 2;
+  min-height: 44px;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(23, 28, 36, 0.55);
+  color: rgba(232, 237, 245, 0.85);
+}
+
+.scroll-bottom.is-hidden {
   display: none;
 }

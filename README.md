@@ -64,7 +64,22 @@ bin/web-cursor-agent cursor-login --config config.yaml --username alice
 bin/web-cursor-agent serve --config config.yaml
 ```
 
-6. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。同じ LAN の別端末から Windows の LAN アドレスで開くには、管理者の PowerShell で WSL の eth0 アドレスへ転送する。接続先を `127.0.0.1` にすると、`0.0.0.0` で待つ転送自身へ戻る。アドレスは WSL で `hostname -I` を実行して得る。WSL の再起動で変わることがある。
+6. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。
+
+常駐させて同じ LAN の別端末から開く場合は、ポート転送を使わず WSL のミラーモードにする。`%USERPROFILE%\.wslconfig` に次を書き、`wsl --shutdown` で反映する。反映には起動中の WSL がすべて止まる。
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+ミラーモードでは Windows の LAN アドレスが WSL からも見える。受信は Hyper-V ファイアウォールで TCP `8787` だけ許可する。管理者の PowerShell で次を実行する。WSL 仮想マシンの ID は `{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` である。
+
+```powershell
+New-NetFirewallHyperVRule -Name "web-cursor-agent" -DisplayName "web-cursor-agent" -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" -Protocol TCP -LocalPorts 8787
+```
+
+NAT のまま一時的に LAN へ出す場合だけ、管理者の PowerShell で WSL の eth0 アドレスへ転送する。接続先を `127.0.0.1` にすると、`0.0.0.0` で待つ転送自身へ戻り、接続が周回する。アドレスは WSL で `hostname -I` を実行して得る。このアドレスは WSL の再起動で変わるため、常駐の転送先にはしない。
 
 ```powershell
 netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8787 connectaddress=<WSL の eth0 アドレス> connectport=8787
