@@ -560,7 +560,8 @@ function fitTerminal() {
     return;
   }
   terminalSession.fit.fit();
-  if (terminalSession.socket.readyState === WebSocket.OPEN) {
+  // 接続前や再接続待ちでは socket が null になり得る。
+  if (terminalSession.socket?.readyState === WebSocket.OPEN) {
     terminalSession.socket.send(
       JSON.stringify({
         type: "resize",
@@ -583,7 +584,7 @@ function sendDraft(text) {
 function sendInput(data) {
   if (
     !terminalSession ||
-    terminalSession.socket.readyState !== WebSocket.OPEN
+    terminalSession.socket?.readyState !== WebSocket.OPEN
   ) {
     return;
   }
