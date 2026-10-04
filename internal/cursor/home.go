@@ -45,12 +45,16 @@ func LayoutFor(stateDir, username string) (Layout, error) {
 }
 
 // Ensure はユーザー用ディレクトリを作成し、API キーがあれば読み込む。
+// あわせて CLI の status indicators を有効にし、切断時の状態判定に使えるようにする。
 func (l *Layout) Ensure() error {
 	if err := os.MkdirAll(l.ConfigDir, 0o700); err != nil {
 		return fmt.Errorf("create cursor home: %w", err)
 	}
 	if err := os.Chmod(l.XDGConfigHome, 0o700); err != nil {
 		return fmt.Errorf("chmod cursor home: %w", err)
+	}
+	if err := EnsureStatusIndicators(l.ConfigDir); err != nil {
+		return err
 	}
 	key, err := readAPIKey(filepath.Join(l.XDGConfigHome, "api_key"))
 	if err != nil {

@@ -20,6 +20,9 @@ allow_cidrs: []
 # 接続元 MAC を確認する。WSL2 の NAT ではクライアントの MAC を観測できないため false にする。
 mac_check: true
 
+# WebSocket 切断後に agent を残す時間。モバイルのスリープ復帰などに使う。既定は 30m。
+detach_grace: 30m
+
 projects:
   - id: sample
     name: sample

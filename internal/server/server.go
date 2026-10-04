@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -49,7 +48,7 @@ type Server struct {
 	remoteIP  func(*http.Request) net.IP
 	launch    LaunchFunc
 	sessions  *sessionStore
-	terms     *termTracker
+	runtimes  *runtimeHub
 	limiter   *loginLimiter
 }
 
@@ -63,7 +62,7 @@ func New(cfg config.Config) *Server {
 		lookupMAC: security.LookupMAC,
 		launch:    launchAgent,
 		sessions:  newSessionStore(filepath.Join(cfg.StateDir, "sessions.json")),
-		terms:     newTermTracker(maxSessions),
+		runtimes:  newRuntimeHub(maxSessions),
 		limiter:   newLoginLimiter(loginFailures, loginWindow),
 	}
 	server.allowsIP = func(ip net.IP) bool {
@@ -106,7 +105,7 @@ func (s *Server) Handler() http.Handler {
 
 // Close は中継中の対話プロセスを終了する。
 func (s *Server) Close() {
-	s.terms.CloseAll()
+	s.runtimes.CloseAll()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +232,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chatID := r.URL.Query().Get("chat")
+	attachID := r.URL.Query().Get("attach")
 	if chatID != "" {
 		if !chatIDPattern.MatchString(chatID) {
 			writeJSON(w, http.StatusBadRequest, errorBody("セッションが見つかりません"))
@@ -255,38 +255,105 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !s.terms.Reserve(user.Username) {
-		writeJSON(w, http.StatusTooManyRequests, errorBody("同時に開けるセッション数の上限に達しています"))
-		return
+
+	var rt *runtimeSession
+	switch {
+	case attachID != "":
+		existing, found := s.runtimes.Lookup(attachID, user.Username)
+		if !found || existing.projectID != project.ID {
+			writeJSON(w, http.StatusNotFound, errorBody("再接続できるセッションがありません"))
+			return
+		}
+		rt = existing
+	case chatID != "":
+		if existing, found := s.runtimes.FindByChat(user.Username, project.ID, chatID); found {
+			rt = existing
+		}
 	}
-	session, err := s.launch(user.Username, project, chatID, 80, 24)
-	if err != nil {
-		s.terms.Release(user.Username, nil)
-		log.Printf("start agent user=%s project=%s: %v", user.Username, project.ID, err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("エージェントを起動できません"))
-		return
+	started := false
+	if rt == nil {
+		if !s.runtimes.Reserve(user.Username) {
+			writeJSON(w, http.StatusTooManyRequests, errorBody("同時に開けるセッション数の上限に達しています"))
+			return
+		}
+		session, err := s.launch(user.Username, project, chatID, 80, 24)
+		if err != nil {
+			s.runtimes.ReleaseReservation(user.Username)
+			log.Printf("start agent user=%s project=%s: %v", user.Username, project.ID, err)
+			writeJSON(w, http.StatusInternalServerError, errorBody("エージェントを起動できません"))
+			return
+		}
+		id, err := newRuntimeID()
+		if err != nil {
+			session.Close()
+			s.runtimes.ReleaseReservation(user.Username)
+			log.Printf("runtime id: %v", err)
+			writeJSON(w, http.StatusInternalServerError, errorBody("エージェントを起動できません"))
+			return
+		}
+		rt = &runtimeSession{
+			id:             id,
+			username:       user.Username,
+			projectID:      project.ID,
+			chatID:         chatID,
+			term:           session,
+			grace:          s.cfg.DetachGrace,
+			hub:            s.runtimes,
+			detachedBuffer: newByteRing(detachBufferMax),
+			readerDone:     make(chan struct{}),
+		}
+		s.runtimes.Track(rt)
+		started = true
+		log.Printf("agent started user=%s project=%s chat=%s runtime=%s", user.Username, project.ID, chatID, rt.id)
 	}
-	s.terms.Track(user.Username, session)
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
-		session.Close()
-		s.terms.Release(user.Username, session)
+		if started {
+			rt.Terminate()
+		}
 		log.Printf("accept websocket: %v", err)
 		return
 	}
 	conn.SetReadLimit(maxInputBytes + 1024)
-	log.Printf("agent started user=%s project=%s chat=%s", user.Username, project.ID, chatID)
-	s.relay(r.Context(), conn, session)
-	session.Close()
-	s.terms.Release(user.Username, session)
-	log.Printf("agent stopped user=%s project=%s chat=%s code=%d", user.Username, project.ID, chatID, session.ExitCode())
+	intentionalClose, agentExited := s.relay(r.Context(), conn, rt)
+	if agentExited {
+		log.Printf("agent stopped user=%s project=%s chat=%s runtime=%s code=%d", user.Username, project.ID, chatID, rt.id, rt.ExitCode())
+		return
+	}
+	if intentionalClose && rt.ShouldTerminateOnClose() {
+		log.Printf("agent closed on idle leave user=%s project=%s runtime=%s", user.Username, project.ID, rt.id)
+		rt.Terminate()
+		return
+	}
+	rt.DetachOutput()
+	log.Printf("agent detached user=%s project=%s runtime=%s intentional=%v activity=%v", user.Username, project.ID, rt.id, intentionalClose, rt.Activity())
 }
 
-func (s *Server) relay(ctx context.Context, conn *websocket.Conn, session *terminal.Session) {
+func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSession) (intentionalClose bool, agentExited bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	var writeMu sync.Mutex
+
+	buffered, live, ok := rt.AttachOutput()
+	if !ok {
+		payload, _ := json.Marshal(map[string]any{"type": "exit", "code": rt.ExitCode()})
+		writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
+		_ = conn.Write(writeCtx, websocket.MessageText, payload)
+		writeCancel()
+		return false, true
+	}
+
+	var (
+		writeMu sync.Mutex
+		exited  bool
+		exitMu  sync.Mutex
+	)
+	setExited := func() {
+		exitMu.Lock()
+		exited = true
+		exitMu.Unlock()
+	}
 	write := func(typ websocket.MessageType, data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -294,6 +361,20 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, session *termi
 		defer writeCancel()
 		return conn.Write(writeCtx, typ, data)
 	}
+	hello, _ := json.Marshal(map[string]any{
+		"type":   "hello",
+		"attach": rt.id,
+		"chat":   rt.chatID,
+	})
+	if err := write(websocket.MessageText, hello); err != nil {
+		return false, false
+	}
+	if len(buffered) > 0 {
+		if err := write(websocket.MessageBinary, buffered); err != nil {
+			return false, false
+		}
+	}
+
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -313,40 +394,39 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, session *termi
 		}
 	}()
 	go func() {
-		buf := make([]byte, 32*1024)
 		for {
-			n, err := session.Read(buf)
-			if n > 0 {
-				payload := append([]byte(nil), buf[:n]...)
+			select {
+			case <-ctx.Done():
+				return
+			case payload, open := <-live:
+				if !open {
+					// detach/reattach でも sink は閉じる。プロセス終了時だけ exit を送る。
+					select {
+					case <-rt.Done():
+					case <-time.After(200 * time.Millisecond):
+					}
+					if code := rt.ExitCode(); code >= 0 {
+						setExited()
+						exitPayload, _ := json.Marshal(map[string]any{"type": "exit", "code": code})
+						_ = write(websocket.MessageText, exitPayload)
+					}
+					cancel()
+					return
+				}
 				if writeErr := write(websocket.MessageBinary, payload); writeErr != nil {
 					cancel()
 					return
 				}
-			}
-			if err != nil {
-				if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
-					log.Printf("read pty: %v", err)
-				}
-				code := session.ExitCode()
-				if code < 0 {
-					select {
-					case <-session.Done():
-						code = session.ExitCode()
-					case <-time.After(time.Second):
-						code = 1
-					}
-				}
-				payload, _ := json.Marshal(map[string]any{"type": "exit", "code": code})
-				_ = write(websocket.MessageText, payload)
-				cancel()
-				return
 			}
 		}
 	}()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			return
+			exitMu.Lock()
+			agentExited = exited
+			exitMu.Unlock()
+			return intentionalClose, agentExited
 		}
 		var message struct {
 			Type string `json:"type"`
@@ -362,14 +442,19 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, session *termi
 			if len(message.Data) > maxInputBytes {
 				continue
 			}
-			if _, err := session.Write([]byte(message.Data)); err != nil {
+			if _, err := rt.Write([]byte(message.Data)); err != nil {
 				log.Printf("write pty: %v", err)
-				return
+				exitMu.Lock()
+				agentExited = exited
+				exitMu.Unlock()
+				return intentionalClose, agentExited
 			}
 		case "resize":
-			if err := session.Resize(message.Cols, message.Rows); err != nil {
+			if err := rt.Resize(message.Cols, message.Rows); err != nil {
 				log.Printf("resize pty: %v", err)
 			}
+		case "close":
+			return true, false
 		}
 	}
 }
@@ -632,66 +717,6 @@ func (s *sessionStore) Delete(token string) {
 	delete(s.sessions, token)
 	if err := s.persistLocked(); err != nil {
 		log.Printf("persist sessions: %v", err)
-	}
-}
-
-type termTracker struct {
-	mu       sync.Mutex
-	counts   map[string]int
-	sessions map[*terminal.Session]string
-	max      int
-}
-
-func newTermTracker(max int) *termTracker {
-	return &termTracker{
-		counts:   map[string]int{},
-		sessions: map[*terminal.Session]string{},
-		max:      max,
-	}
-}
-
-// Reserve はユーザーの同時セッション数に空きがあるとき枠を確保する。
-func (t *termTracker) Reserve(username string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.counts[username] >= t.max {
-		return false
-	}
-	t.counts[username]++
-	return true
-}
-
-// Track は停止時にまとめて終了できるよう、起動した対話プロセスを覚える。
-func (t *termTracker) Track(username string, session *terminal.Session) {
-	t.mu.Lock()
-	t.sessions[session] = username
-	t.mu.Unlock()
-}
-
-// Release は確保したセッション枠を返す。
-func (t *termTracker) Release(username string, session *terminal.Session) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if session != nil {
-		delete(t.sessions, session)
-	}
-	if t.counts[username] > 0 {
-		t.counts[username]--
-	}
-}
-
-// CloseAll はサーバ停止時に、残っている対話プロセスを終了する。
-func (t *termTracker) CloseAll() {
-	t.mu.Lock()
-	sessions := make([]*terminal.Session, 0, len(t.sessions))
-	for session := range t.sessions {
-		sessions = append(sessions, session)
-	}
-	t.sessions = map[*terminal.Session]string{}
-	t.counts = map[string]int{}
-	t.mu.Unlock()
-	for _, session := range sessions {
-		session.Close()
 	}
 }
 

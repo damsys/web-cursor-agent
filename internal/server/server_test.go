@@ -128,10 +128,11 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		UsersFile: usersPath,
-		StateDir:  filepath.Join(dir, "var"),
-		WebDir:    dir,
-		MacCheck:  true,
+		UsersFile:   usersPath,
+		StateDir:    filepath.Join(dir, "var"),
+		WebDir:      dir,
+		MacCheck:    true,
+		DetachGrace: time.Minute,
 		Projects: []config.Project{{
 			ID:   "app",
 			Name: "App",

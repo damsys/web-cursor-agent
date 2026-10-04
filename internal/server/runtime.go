@@ -1,0 +1,356 @@
+package server
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"io"
+	"log"
+	"sync"
+	"time"
+
+	"web-cursor-agent/internal/terminal"
+)
+
+const (
+	detachBufferMax = 512 * 1024
+	outputSinkSize  = 64
+)
+
+// runtimeSession は WebSocket の寿命から切り離した 1 つの agent 対話である。
+type runtimeSession struct {
+	id        string
+	username  string
+	projectID string
+	chatID    string
+	term      *terminal.Session
+	grace     time.Duration
+	hub       *runtimeHub
+
+	mu             sync.Mutex
+	activity       AgentActivity
+	sink           chan []byte
+	detachedBuffer *byteRing
+	graceTimer     *time.Timer
+	closed         bool
+	readerDone     chan struct{}
+}
+
+type byteRing struct {
+	buf []byte
+	max int
+}
+
+func newByteRing(max int) *byteRing {
+	return &byteRing{max: max}
+}
+
+func (r *byteRing) Write(p []byte) {
+	if r.max <= 0 {
+		return
+	}
+	if len(p) >= r.max {
+		r.buf = append([]byte(nil), p[len(p)-r.max:]...)
+		return
+	}
+	overflow := len(r.buf) + len(p) - r.max
+	if overflow > 0 {
+		r.buf = r.buf[overflow:]
+	}
+	r.buf = append(r.buf, p...)
+}
+
+func (r *byteRing) Take() []byte {
+	out := r.buf
+	r.buf = nil
+	return out
+}
+
+func newRuntimeID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (rt *runtimeSession) start() {
+	go rt.readLoop()
+}
+
+func (rt *runtimeSession) readLoop() {
+	defer close(rt.readerDone)
+	defer rt.closeSink()
+	buf := make([]byte, 32*1024)
+	scanner := &oscScanner{onTitle: rt.setTitle}
+	for {
+		n, err := rt.term.Read(buf)
+		if n > 0 {
+			payload := append([]byte(nil), buf[:n]...)
+			scanner.Feed(payload)
+			rt.deliver(payload)
+		}
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("read pty runtime=%s: %v", rt.id, err)
+			}
+			rt.markClosed()
+			rt.hub.remove(rt)
+			return
+		}
+	}
+}
+
+func (rt *runtimeSession) closeSink() {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.sink != nil {
+		close(rt.sink)
+		rt.sink = nil
+	}
+}
+
+func (rt *runtimeSession) markClosed() {
+	rt.mu.Lock()
+	rt.closed = true
+	rt.stopGraceLocked()
+	rt.mu.Unlock()
+}
+
+func (rt *runtimeSession) setTitle(title string) {
+	activity := ClassifyTitle(title)
+	if activity == AgentActivityUnknown {
+		return
+	}
+	rt.mu.Lock()
+	rt.activity = activity
+	rt.mu.Unlock()
+}
+
+func (rt *runtimeSession) Activity() AgentActivity {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.activity
+}
+
+func (rt *runtimeSession) deliver(payload []byte) {
+	rt.mu.Lock()
+	sink := rt.sink
+	if sink == nil {
+		rt.detachedBuffer.Write(payload)
+		rt.mu.Unlock()
+		return
+	}
+	rt.mu.Unlock()
+	select {
+	case sink <- payload:
+	case <-rt.readerDone:
+	}
+}
+
+// AttachOutput は切断中に溜めた出力を返し、以降の出力を channel へ流す。
+func (rt *runtimeSession) AttachOutput() (buffered []byte, live <-chan []byte, ok bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.closed {
+		return nil, nil, false
+	}
+	rt.stopGraceLocked()
+	if rt.sink != nil {
+		close(rt.sink)
+		rt.sink = nil
+	}
+	buffered = rt.detachedBuffer.Take()
+	sink := make(chan []byte, outputSinkSize)
+	rt.sink = sink
+	return buffered, sink, true
+}
+
+// DetachOutput は WebSocket 切断後も agent を残し、出力をバッファへ回す。
+func (rt *runtimeSession) DetachOutput() {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.closed {
+		return
+	}
+	if rt.sink != nil {
+		close(rt.sink)
+		rt.sink = nil
+	}
+	rt.startGraceLocked()
+}
+
+// ShouldTerminateOnClose は意図的な離脱時に、アイドルなら即終了してよいかを返す。
+func (rt *runtimeSession) ShouldTerminateOnClose() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.activity == AgentActivityIdle
+}
+
+func (rt *runtimeSession) startGraceLocked() {
+	if rt.graceTimer != nil {
+		rt.graceTimer.Stop()
+	}
+	if rt.grace <= 0 {
+		rt.graceTimer = nil
+		go rt.Terminate()
+		return
+	}
+	rt.graceTimer = time.AfterFunc(rt.grace, func() {
+		log.Printf("detach grace expired runtime=%s user=%s project=%s", rt.id, rt.username, rt.projectID)
+		rt.Terminate()
+	})
+}
+
+func (rt *runtimeSession) stopGraceLocked() {
+	if rt.graceTimer != nil {
+		rt.graceTimer.Stop()
+		rt.graceTimer = nil
+	}
+}
+
+// Terminate は agent を終了し、同時セッション枠を返す。
+func (rt *runtimeSession) Terminate() {
+	rt.mu.Lock()
+	if rt.closed {
+		rt.mu.Unlock()
+		return
+	}
+	rt.closed = true
+	rt.stopGraceLocked()
+	if rt.sink != nil {
+		close(rt.sink)
+		rt.sink = nil
+	}
+	rt.mu.Unlock()
+	rt.term.Close()
+	rt.hub.remove(rt)
+}
+
+// ExitCode はプロセスの終了コードを返す。
+func (rt *runtimeSession) ExitCode() int {
+	return rt.term.ExitCode()
+}
+
+// Done はプロセス終了を待つ。
+func (rt *runtimeSession) Done() <-chan struct{} {
+	return rt.term.Done()
+}
+
+// Write は仮想端末へ入力する。
+func (rt *runtimeSession) Write(p []byte) (int, error) {
+	return rt.term.Write(p)
+}
+
+// Resize は仮想端末サイズを変える。
+func (rt *runtimeSession) Resize(cols, rows int) error {
+	return rt.term.Resize(cols, rows)
+}
+
+type runtimeHub struct {
+	mu       sync.Mutex
+	max      int
+	counts   map[string]int
+	byID     map[string]*runtimeSession
+	sessions map[*runtimeSession]struct{}
+}
+
+func newRuntimeHub(max int) *runtimeHub {
+	return &runtimeHub{
+		max:      max,
+		counts:   map[string]int{},
+		byID:     map[string]*runtimeSession{},
+		sessions: map[*runtimeSession]struct{}{},
+	}
+}
+
+// Reserve は新規起動用の枠を確保する。
+func (h *runtimeHub) Reserve(username string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.counts[username] >= h.max {
+		return false
+	}
+	h.counts[username]++
+	return true
+}
+
+// ReleaseReservation は起動失敗時に枠だけ返す。
+func (h *runtimeHub) ReleaseReservation(username string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.counts[username] > 0 {
+		h.counts[username]--
+	}
+}
+
+// Track は起動済みの runtime を登録する。Reserve 済みの枠をそのまま使う。
+func (h *runtimeHub) Track(rt *runtimeSession) {
+	h.mu.Lock()
+	h.byID[rt.id] = rt
+	h.sessions[rt] = struct{}{}
+	h.mu.Unlock()
+	rt.start()
+}
+
+// Lookup は attach ID から runtime を返す。所有者以外には渡さない。
+func (h *runtimeHub) Lookup(id, username string) (*runtimeSession, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rt, ok := h.byID[id]
+	if !ok || rt.username != username {
+		return nil, false
+	}
+	rt.mu.Lock()
+	closed := rt.closed
+	rt.mu.Unlock()
+	if closed {
+		return nil, false
+	}
+	return rt, true
+}
+
+// FindByChat は同じユーザー・プロジェクト・チャットの生存 runtime を返す。
+func (h *runtimeHub) FindByChat(username, projectID, chatID string) (*runtimeSession, bool) {
+	if chatID == "" {
+		return nil, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for rt := range h.sessions {
+		if rt.username == username && rt.projectID == projectID && rt.chatID == chatID {
+			rt.mu.Lock()
+			closed := rt.closed
+			rt.mu.Unlock()
+			if !closed {
+				return rt, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (h *runtimeHub) remove(rt *runtimeSession) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.sessions[rt]; !ok {
+		return
+	}
+	delete(h.sessions, rt)
+	delete(h.byID, rt.id)
+	if h.counts[rt.username] > 0 {
+		h.counts[rt.username]--
+	}
+}
+
+// CloseAll はサーバ停止時に残っている agent を終了する。
+func (h *runtimeHub) CloseAll() {
+	h.mu.Lock()
+	sessions := make([]*runtimeSession, 0, len(h.sessions))
+	for rt := range h.sessions {
+		sessions = append(sessions, rt)
+	}
+	h.mu.Unlock()
+	for _, rt := range sessions {
+		rt.Terminate()
+	}
+}

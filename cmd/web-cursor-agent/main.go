@@ -191,6 +191,16 @@ func userUpsert(args []string) int {
 		log.Printf("save users: %v", err)
 		return 1
 	}
+	layout, err := cursor.LayoutFor(cfg.StateDir, *username)
+	if err != nil {
+		log.Printf("cursor layout: %v", err)
+		return 1
+	}
+	// 切断時の busy/idle 判定用に、CLI の status indicators を有効化する。
+	if err := layout.Ensure(); err != nil {
+		log.Printf("prepare cursor home: %v", err)
+		return 1
+	}
 	fmt.Printf("ユーザーを更新しました: %s\n", *username)
 	return 0
 }

@@ -49,6 +49,8 @@ cp config.example.yaml config.yaml
 bin/web-cursor-agent user upsert --config config.yaml --username alice --mac aa:bb:cc:dd:ee:ff
 ```
 
+`user upsert` はユーザー用の Cursor ディレクトリを用意し、切断時の状態判定に使う CLI の status indicators も有効にする。
+
 MAC アドレスは、スマートフォンの設定か、無線 LAN ルーターの接続クライアント一覧で確認する。サーバが接続元の MAC を観測できる環境 (Linux や WSL のミラーモード) では、登録したアドレス以外からのログインを拒否する。WSL2 の NAT ではスマートフォンの MAC を観測できないので、`config.yaml` の `mac_check` を `false` にする。パスワードと同一セグメントの制限は残る。
 
 4. そのユーザーの Cursor アカウントで CLI にログインする。
@@ -228,6 +230,7 @@ WSL 内の systemd 設定はそのままでよい。
 - 設定ファイル
     - config.yaml
         - プロジェクトの一覧
+        - `detach_grace` (WebSocket 切断後に agent を残す時間。既定 `30m`)
     - users.yaml
         - ユーザーの一覧
             - ユーザー名
@@ -237,5 +240,6 @@ WSL 内の systemd 設定はそのままでよい。
 - 設定ツール
     - ユーザーの追加・更新
         - ユーザー名の入力とパスワードの入力を受け付けて `users.yaml` に追加・更新する。
+        - あわせてそのユーザーの Cursor ホームと CLI status indicators を用意する。
     - `gh-login` / `gh-status`
         - ユーザーごとの `XDG_CONFIG_HOME` で GitHub CLI のログインと状態確認を行う。

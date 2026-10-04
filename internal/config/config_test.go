@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadResolvesPathsAndDefaultsMacCheck(t *testing.T) {
@@ -27,6 +28,9 @@ allow_cidrs:
 	if !cfg.MacCheck {
 		t.Fatal("mac check should default to enabled")
 	}
+	if cfg.DetachGrace != defaultDetachGrace {
+		t.Fatalf("detach grace = %s", cfg.DetachGrace)
+	}
 	if cfg.UsersFile != filepath.Join(dir, "users.yaml") {
 		t.Fatalf("users file = %s", cfg.UsersFile)
 	}
@@ -38,6 +42,21 @@ allow_cidrs:
 	}
 	if len(cfg.Networks) != 1 {
 		t.Fatalf("networks = %d", len(cfg.Networks))
+	}
+}
+
+func TestLoadDetachGrace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("detach_grace: 15m\nprojects: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DetachGrace != 15*time.Minute {
+		t.Fatalf("detach grace = %s", cfg.DetachGrace)
 	}
 }
 

@@ -231,6 +231,36 @@ async function renderSessions(projectId) {
   }
 }
 
+function attachStorageKey(projectId, chatId) {
+  return `wca-attach:${projectId}:${chatId || "new"}`;
+}
+
+function loadAttachID(projectId, chatId) {
+  try {
+    return sessionStorage.getItem(attachStorageKey(projectId, chatId)) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function saveAttachID(projectId, chatId, attachID) {
+  try {
+    if (attachID) {
+      sessionStorage.setItem(attachStorageKey(projectId, chatId), attachID);
+    }
+  } catch (_error) {
+    // sessionStorage が使えない環境でも端末自体は動かす。
+  }
+}
+
+function clearAttachID(projectId, chatId) {
+  try {
+    sessionStorage.removeItem(attachStorageKey(projectId, chatId));
+  } catch (_error) {
+    // ignore
+  }
+}
+
 function renderTerminal(projectId, chatId) {
   const project = projects.find((item) => item.id === projectId);
   destroyTerminal();
@@ -277,12 +307,6 @@ function renderTerminal(projectId, chatId) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(termElement);
-  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const chat = chatId ? `&chat=${encodeURIComponent(chatId)}` : "";
-  const socket = new WebSocket(
-    `${protocol}//${location.host}/ws/terminal?project=${encodeURIComponent(projectId)}${chat}`,
-  );
-  socket.binaryType = "arraybuffer";
   const syncScrollBottom = () => {
     const buffer = term.buffer.active;
     // 末尾より上へ遡っているときだけ、末尾へ戻る導線を出す。
@@ -298,31 +322,24 @@ function renderTerminal(projectId, chatId) {
   terminalSession = {
     term,
     fit,
-    socket,
+    socket: null,
     route,
+    projectId,
+    chatId,
+    attachID: loadAttachID(projectId, chatId),
+    seenHello: false,
     hidden: false,
+    leaving: false,
+    agentExited: false,
+    reconnectTimer: null,
     unbindTouchScroll: bindTerminalTouchScroll(term, termElement),
     disposeScroll: () => scrollDisposable.dispose(),
+    onVisibility: null,
+    onOnline: null,
   };
   fitTerminal();
   syncScrollBottom();
   new ResizeObserver(() => fitTerminal()).observe(termElement);
-  socket.addEventListener("open", () => fitTerminal());
-  socket.addEventListener("message", (event) => {
-    if (typeof event.data === "string") {
-      const message = JSON.parse(event.data);
-      if (message.type === "exit") {
-        term.writeln(`\r\nセッションが終了しました (code ${message.code})`);
-      }
-      return;
-    }
-    term.write(new Uint8Array(event.data));
-  });
-  socket.addEventListener("close", () => {
-    if (terminalSession && terminalSession.socket === socket) {
-      term.writeln("\r\n接続が閉じました");
-    }
-  });
   document.querySelector("#composer").addEventListener("submit", (event) => {
     event.preventDefault();
     const draft = document.querySelector("#draft");
@@ -359,6 +376,125 @@ function renderTerminal(projectId, chatId) {
     document.querySelector("#floats").classList.remove("is-hidden");
   });
   document.addEventListener("keydown", onTerminalKeydown);
+  terminalSession.onVisibility = () => {
+    if (document.visibilityState === "visible") {
+      reconnectTerminal();
+    }
+  };
+  terminalSession.onOnline = () => reconnectTerminal();
+  document.addEventListener("visibilitychange", terminalSession.onVisibility);
+  window.addEventListener("online", terminalSession.onOnline);
+  connectTerminal();
+}
+
+function connectTerminal() {
+  if (
+    !terminalSession ||
+    terminalSession.leaving ||
+    terminalSession.agentExited
+  ) {
+    return;
+  }
+  if (
+    terminalSession.socket &&
+    (terminalSession.socket.readyState === WebSocket.OPEN ||
+      terminalSession.socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  const { projectId, chatId, term } = terminalSession;
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const params = new URLSearchParams({ project: projectId });
+  if (chatId) {
+    params.set("chat", chatId);
+  }
+  if (terminalSession.attachID) {
+    params.set("attach", terminalSession.attachID);
+  }
+  const socket = new WebSocket(
+    `${protocol}//${location.host}/ws/terminal?${params.toString()}`,
+  );
+  socket.binaryType = "arraybuffer";
+  terminalSession.socket = socket;
+  terminalSession.seenHello = false;
+  socket.addEventListener("open", () => fitTerminal());
+  socket.addEventListener("message", (event) => {
+    if (!terminalSession || terminalSession.socket !== socket) {
+      return;
+    }
+    if (typeof event.data === "string") {
+      const message = JSON.parse(event.data);
+      if (message.type === "hello" && message.attach) {
+        terminalSession.seenHello = true;
+        terminalSession.attachID = message.attach;
+        saveAttachID(projectId, chatId, message.attach);
+        return;
+      }
+      if (message.type === "exit") {
+        terminalSession.agentExited = true;
+        clearAttachID(projectId, chatId);
+        term.writeln(`\r\nセッションが終了しました (code ${message.code})`);
+      }
+      return;
+    }
+    term.write(new Uint8Array(event.data));
+  });
+  socket.addEventListener("close", () => {
+    if (!terminalSession || terminalSession.socket !== socket) {
+      return;
+    }
+    terminalSession.socket = null;
+    if (terminalSession.leaving || terminalSession.agentExited) {
+      return;
+    }
+    // 期限切れの attach では upgrade 前に失敗するため、捨てて新規/chat 再接続に切り替える。
+    if (!terminalSession.seenHello && terminalSession.attachID) {
+      clearAttachID(projectId, chatId);
+      terminalSession.attachID = "";
+    }
+    term.writeln("\r\n接続が切れました。再接続しています…");
+    scheduleTerminalReconnect(1000);
+  });
+}
+
+function scheduleTerminalReconnect(delayMs) {
+  if (
+    !terminalSession ||
+    terminalSession.leaving ||
+    terminalSession.agentExited
+  ) {
+    return;
+  }
+  if (terminalSession.reconnectTimer) {
+    window.clearTimeout(terminalSession.reconnectTimer);
+  }
+  terminalSession.reconnectTimer = window.setTimeout(() => {
+    if (
+      !terminalSession ||
+      terminalSession.leaving ||
+      terminalSession.agentExited
+    ) {
+      return;
+    }
+    connectTerminal();
+  }, delayMs);
+}
+
+function reconnectTerminal() {
+  if (
+    !terminalSession ||
+    terminalSession.leaving ||
+    terminalSession.agentExited
+  ) {
+    return;
+  }
+  if (
+    terminalSession.socket &&
+    terminalSession.socket.readyState === WebSocket.OPEN
+  ) {
+    return;
+  }
+  scheduleTerminalReconnect(0);
 }
 
 function onTerminalKeydown(event) {
@@ -459,9 +595,33 @@ function destroyTerminal() {
   if (!terminalSession) {
     return;
   }
+  terminalSession.leaving = true;
+  if (terminalSession.reconnectTimer) {
+    window.clearTimeout(terminalSession.reconnectTimer);
+  }
+  if (terminalSession.onVisibility) {
+    document.removeEventListener(
+      "visibilitychange",
+      terminalSession.onVisibility,
+    );
+  }
+  if (terminalSession.onOnline) {
+    window.removeEventListener("online", terminalSession.onOnline);
+  }
   terminalSession.unbindTouchScroll();
   terminalSession.disposeScroll();
-  terminalSession.socket.close();
+  const socket = terminalSession.socket;
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    // 意図的な離脱を伝え、アイドルなら即終了・処理中なら猶予付きで残す。
+    try {
+      socket.send(JSON.stringify({ type: "close" }));
+    } catch (_error) {
+      // ignore
+    }
+    socket.close();
+  } else if (socket) {
+    socket.close();
+  }
   terminalSession.term.dispose();
   terminalSession = null;
 }

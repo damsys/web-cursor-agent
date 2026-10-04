@@ -14,8 +14,11 @@
 
 - 画面と API は同一オリジンで提供する。
 - プロジェクトの実体は `config.yaml` に書いたディレクトリである。ブラウザからパスは渡さない。
-- 1 つの WebSocket が 1 つの `agent` プロセスに対応する。接続が切れると、そのプロセスへ SIGHUP を送り終了する。会話そのものは Cursor のチャット履歴に残るので、一覧から `--resume` で開き直す。
-- 同時に開けるセッションは、ユーザーあたり 4 つまでとする。
+- 1 つのランタイムセッションが 1 つの `agent` プロセスに対応する。WebSocket はそれにアタッチする。
+- 非意図の切断 (モバイルのスリープなど) では、すぐにプロセスを終了せず `detach_grace` (既定 30 分) のあいだ残す。クライアントは `attach` ID で同じプロセスへ再接続する。
+- 画面からの意図的な離脱では `{"type":"close"}` を送る。CLI の status indicators (端末タイトル) が Ready なら即終了し、Working / Waiting または不明なら猶予付きで残す。
+- 会話そのものは Cursor のチャット履歴にも残るので、猶予を過ぎたあとは一覧から `--resume` で開き直せる。
+- 同時に開けるセッションは、切断中のものも含めてユーザーあたり 4 つまでとする。
 
 ## Cursor CLI の認証
 
@@ -32,6 +35,8 @@ Linux 版の `agent` は、認証トークンを `$XDG_CONFIG_HOME/cursor/auth.j
 | `CURSOR_DATA_DIR` | `<state_dir>/cursor/<username>/cursor` |
 
 この結果、認証ファイルは `<state_dir>/cursor/<username>/cursor/auth.json` になる。初回は `cursor-login` が、この環境で `agent login` を実行する。API キーを使う場合は、ログインの代わりに `<state_dir>/cursor/<username>/api_key` にキーを 1 行で置く。サーバは起動のたびにこのファイルを読み、空でなければ `CURSOR_API_KEY` を子プロセスへ渡す。
+
+切断時の busy/idle 判定のため、`<CURSOR_CONFIG_DIR>/cli-config.json` の `display.showStatusIndicators` を有効にする。`user upsert` とセッション開始時の `Ensure` が、既存の他設定を維持したままこの項目だけを立てる。
 
 `HOME` は変えない。`agent` が起動するシェルの git や ssh は、サーバを実行している OS ユーザーのものを使う。一方 `gh` は設定を `$XDG_CONFIG_HOME/gh` に置くため、ユーザーごとの `XDG_CONFIG_HOME` 切り替えの影響を受ける。OS ユーザーの `~/.config/gh` は見えないので、初回は `gh-login` が同じ環境で `gh auth login` を実行する。認証情報は `<state_dir>/cursor/<username>/gh/` に保存される。
 
@@ -64,7 +69,9 @@ UNIX ユーザーをアプリのユーザーごとに作る方式は採らない
 
 チャット ID は UUID に限り、そのユーザーの履歴ディレクトリに存在するものだけを渡す。
 
-WebSocket のテキストフレームは JSON の制御メッセージである。入力は `{"type":"input","data":"..."}`、サイズ変更は `{"type":"resize","cols":80,"rows":24}` である。仮想端末の出力はバイナリフレームでそのまま送る。プロセス終了は `{"type":"exit","code":0}` で通知する。
+WebSocket のテキストフレームは JSON の制御メッセージである。接続直後にサーバは `{"type":"hello","attach":"<id>","chat":"..."}` を送る。入力は `{"type":"input","data":"..."}`、サイズ変更は `{"type":"resize","cols":80,"rows":24}`、意図的な離脱は `{"type":"close"}` である。仮想端末の出力はバイナリフレームでそのまま送る。プロセス終了は `{"type":"exit","code":0}` で通知する。再接続は `/ws/terminal?project=...&attach=<id>` を使う。同じ `chat` の生存ランタイムがあれば、`attach` なしでもそれに繋ぐ。
+
+切断中も PTY 出力は読み続け、再接続時に最大 512KiB までまとめて送る。読めないと agent が出力で止まるためである。
 
 画面のテキスト入力は 1 文字ずつ送らない。テキストエリアの改行は改行文字のまま保持し、送信ボタンが本文をまとめて送ったあと、別の入力として Enter (`\r`) を送って確定する。同じ入力に含めた復帰は本文の改行になるためである。カーソルキーと Enter は、エージェントの画面操作のために個別のボタンから送る。これらのボタンは画面右下に半透明のパネルとして置き、パネル右上の × で一時的に隠せる。隠したあとは、端末の表示領域を触ると戻る。
 
@@ -76,7 +83,7 @@ WebSocket のテキストフレームは JSON の制御メッセージである�
 
 ## 設定
 
-`config.yaml` はプロジェクト一覧、待受アドレス、ユーザーファイル、状態ディレクトリ、`agent` のコマンド、画面ファイルの場所、追加で許可する CIDR、MAC 確認の有無を持つ。相対パスは設定ファイルのあるディレクトリを基準に解決する。
+`config.yaml` はプロジェクト一覧、待受アドレス、ユーザーファイル、状態ディレクトリ、`agent` のコマンド、画面ファイルの場所、追加で許可する CIDR、MAC 確認の有無、WebSocket 切断後の猶予 `detach_grace` を持つ。相対パスは設定ファイルのあるディレクトリを基準に解決する。
 
 `users.yaml` はユーザー名、パスワードハッシュ、MAC アドレスのリストを持つ。更新は `user upsert` が行い、一時ファイルへ書いてから置き換える。権限は `0600` とする。
 

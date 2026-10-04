@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+const defaultDetachGrace = 30 * time.Minute
 
 var projectIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
@@ -22,15 +25,17 @@ type Project struct {
 
 // Config は起動時に確定した設定である。相対パスは設定ファイルの場所で解決済みにする。
 type Config struct {
-	Listen       string    `yaml:"listen"`
-	UsersFile    string    `yaml:"users_file"`
-	StateDir     string    `yaml:"state_dir"`
-	AgentCommand string    `yaml:"agent_command"`
-	WebDir       string    `yaml:"web_dir"`
-	AllowCIDRs   []string  `yaml:"allow_cidrs"`
-	MacCheck     bool      `yaml:"-"`
-	Projects     []Project `yaml:"projects"`
-	Networks     []*net.IPNet
+	Listen       string
+	UsersFile    string
+	StateDir     string
+	AgentCommand string
+	WebDir       string
+	AllowCIDRs   []string
+	MacCheck     bool
+	// DetachGrace は WebSocket 切断後に agent を残す時間である。
+	DetachGrace time.Duration
+	Projects    []Project
+	Networks    []*net.IPNet
 }
 
 type fileConfig struct {
@@ -41,6 +46,7 @@ type fileConfig struct {
 	WebDir       string    `yaml:"web_dir"`
 	AllowCIDRs   []string  `yaml:"allow_cidrs"`
 	MacCheck     *bool     `yaml:"mac_check"`
+	DetachGrace  string    `yaml:"detach_grace"`
 	Projects     []Project `yaml:"projects"`
 }
 
@@ -67,10 +73,21 @@ func Load(path string) (Config, error) {
 		WebDir:       file.WebDir,
 		AllowCIDRs:   file.AllowCIDRs,
 		MacCheck:     true,
+		DetachGrace:  defaultDetachGrace,
 		Projects:     file.Projects,
 	}
 	if file.MacCheck != nil {
 		cfg.MacCheck = *file.MacCheck
+	}
+	if file.DetachGrace != "" {
+		grace, err := time.ParseDuration(file.DetachGrace)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid detach_grace %q: %w", file.DetachGrace, err)
+		}
+		if grace < 0 {
+			return Config{}, fmt.Errorf("detach_grace must not be negative")
+		}
+		cfg.DetachGrace = grace
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = "0.0.0.0:8787"
