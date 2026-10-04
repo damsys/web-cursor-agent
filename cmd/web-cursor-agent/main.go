@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -80,35 +81,51 @@ func serve(args []string) int {
 	}
 	app := server.New(cfg)
 	app.BindLaunch()
-	httpServer := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           app.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+	endpoints, err := listenEndpoints(cfg.Listen)
+	if err != nil {
+		log.Printf("listen address: %v", err)
+		return 1
 	}
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s", cfg.Listen)
-		err := httpServer.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
+	handler := app.Handler()
+	var httpServers []*http.Server
+	errCh := make(chan error, len(endpoints))
+	for _, endpoint := range endpoints {
+		listener, err := net.Listen(endpoint.network, endpoint.address)
+		if err != nil {
+			log.Printf("listen %s %s: %v", endpoint.network, endpoint.address, err)
+			continue
 		}
-		close(errCh)
-	}()
+		httpServer := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		httpServers = append(httpServers, httpServer)
+		go func(httpServer *http.Server, listener net.Listener) {
+			log.Printf("listening on %s", listener.Addr())
+			err := httpServer.Serve(listener)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}(httpServer, listener)
+	}
+	if len(httpServers) == 0 {
+		return 1
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	select {
 	case err := <-errCh:
-		if err != nil {
-			log.Printf("server: %v", err)
-			return 1
-		}
+		log.Printf("server: %v", err)
+		return 1
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		app.Close()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown: %v", err)
-			return 1
+		for _, httpServer := range httpServers {
+			if err := httpServer.Shutdown(shutdownCtx); err != nil {
+				log.Printf("shutdown: %v", err)
+				return 1
+			}
 		}
 	}
 	return 0
