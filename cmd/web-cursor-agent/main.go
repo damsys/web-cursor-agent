@@ -40,6 +40,10 @@ func main() {
 		code = cursorCommand(os.Args[2:], "login")
 	case "cursor-status":
 		code = cursorCommand(os.Args[2:], "status")
+	case "gh-login":
+		code = ghCommand(os.Args[2:], "login")
+	case "gh-status":
+		code = ghCommand(os.Args[2:], "status")
 	case "help", "-h", "--help":
 		usage()
 		code = 0
@@ -57,6 +61,8 @@ func usage() {
   web-cursor-agent user list --config config.yaml
   web-cursor-agent cursor-login --config config.yaml --username NAME
   web-cursor-agent cursor-status --config config.yaml --username NAME
+  web-cursor-agent gh-login --config config.yaml --username NAME
+  web-cursor-agent gh-status --config config.yaml --username NAME
 `)
 }
 
@@ -212,7 +218,32 @@ func userList(args []string) int {
 }
 
 func cursorCommand(args []string, action string) int {
-	fs := flag.NewFlagSet("cursor-"+action, flag.ContinueOnError)
+	return runUserEnvCommand(args, "cursor-"+action, func(cfg config.Config, layout cursor.Layout) (*exec.Cmd, error) {
+		command := cfg.AgentCommand
+		if _, err := exec.LookPath(command); err != nil && !strings.Contains(command, "/") {
+			return nil, fmt.Errorf("agent command: %w", err)
+		}
+		cmd := exec.Command(command, action)
+		cmd.Env = layout.Environ(os.Environ())
+		return cmd, nil
+	})
+}
+
+// ghCommand はユーザーごとの XDG_CONFIG_HOME で GitHub CLI を動かす。
+func ghCommand(args []string, action string) int {
+	return runUserEnvCommand(args, "gh-"+action, func(_ config.Config, layout cursor.Layout) (*exec.Cmd, error) {
+		if _, err := exec.LookPath("gh"); err != nil {
+			return nil, fmt.Errorf("gh command: %w", err)
+		}
+		cmd := exec.Command("gh", "auth", action)
+		cmd.Env = layout.Environ(os.Environ())
+		return cmd, nil
+	})
+}
+
+// runUserEnvCommand は指定ユーザーの Cursor 状態ディレクトリを用意し、その環境で外部コマンドを実行する。
+func runUserEnvCommand(args []string, name string, build func(config.Config, cursor.Layout) (*exec.Cmd, error)) int {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	configPath := fs.String("config", "config.yaml", "path to config.yaml")
 	username := fs.String("username", "", "user name")
 	if err := fs.Parse(args); err != nil {
@@ -245,18 +276,16 @@ func cursorCommand(args []string, action string) int {
 		log.Printf("cursor home: %v", err)
 		return 1
 	}
-	command := cfg.AgentCommand
-	if _, err := exec.LookPath(command); err != nil && !strings.Contains(command, "/") {
-		log.Printf("agent command: %v", err)
+	cmd, err := build(cfg, layout)
+	if err != nil {
+		log.Printf("%v", err)
 		return 1
 	}
-	cmd := exec.Command(command, action)
-	cmd.Env = layout.Environ(os.Environ())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		log.Printf("agent %s: %v", action, err)
+		log.Printf("%s: %v", name, err)
 		return 1
 	}
 	return 0

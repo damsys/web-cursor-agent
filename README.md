@@ -17,6 +17,7 @@
 
 - 本システムは POSIX システム上で動作する。特に Windows 環境では WSL 環境を前提とする。
 - Cursor CLI (`agent`) がインストールされているものとする。
+- GitHub CLI (`gh`) は `mise.toml` でバージョンを固定し、`mise install` で入れる。
 - フロントエンド資産の取得には Node.js を使う。バージョンは `mise.toml` で固定する。
 
 ## フロントエンド資産
@@ -58,13 +59,21 @@ bin/web-cursor-agent cursor-login --config config.yaml --username alice
 
 ブラウザを開かず URL だけ出す場合は、先頭に `NO_OPEN_BROWSER=1` を付けて実行する。API キーを使う場合は、ログインの代わりに `var/cursor/alice/api_key` へキーを 1 行で書き、権限を `600` にする。
 
-5. サーバを起動する。
+5. そのユーザー環境で GitHub CLI (`gh`) にログインする。エージェント起動時は `XDG_CONFIG_HOME` をユーザーごとに切り替えるため、OS ユーザーの `~/.config/gh` は参照されない。
+
+```bash
+bin/web-cursor-agent gh-login --config config.yaml --username alice
+```
+
+状態の確認は `gh-status` を使う。`gh` 自体は `mise install` で入れる。
+
+6. サーバを起動する。
 
 ```bash
 bin/web-cursor-agent serve --config config.yaml
 ```
 
-6. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。
+7. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。
 
 常駐させて同じ LAN の別端末から開く場合は、ポート転送を使わず WSL のミラーモードにする。`%USERPROFILE%\.wslconfig` に次を書き、`wsl --shutdown` で反映する。反映には起動中の WSL がすべて止まる。
 
@@ -87,6 +96,72 @@ netsh advfirewall firewall add rule name="web-cursor-agent 8787" dir=in action=a
 ```
 
 パスワードや MAC アドレスを変更するときも、同じ `user upsert` を使う。`--mac` を省略すると、登録済みの MAC アドレスは維持される。リストを空にするときは `--clear-macs` を付ける。
+
+## 常駐 / PC 起動時自動起動
+
+PC 起動後にサーバを自動で待受状態にするため、次の二段で常駐させる。
+
+1. Windows のタスクスケジューラが WSL distro を起こし、終了しないプロセスで維持する。
+2. WSL 内の systemd user サービスが `web-cursor-agent serve` を起動する。
+
+事前条件は、`make -f Makefile.agent build` 済みであること、`config.yaml` があること、LAN 公開する場合は上記のミラーモードと Hyper-V ファイアウォール設定が済んでいることである。`/etc/wsl.conf` に `[boot] systemd=true` があることも必要である。
+
+### WSL 側
+
+リポジトリ直下で次を実行する。unit を `~/.config/systemd/user/` へ置き、`loginctl enable-linger` でログイン前でも user サービスを起動できるようにし、すぐ有効化する。
+
+```bash
+make -f Makefile.agent install-service
+systemctl --user status web-cursor-agent
+```
+
+停止だけするときは `systemctl --user stop web-cursor-agent`、常駐ごと外すときは次を使う。linger は他用途の可能性があるため外さない。不要なら手動で `loginctl disable-linger "$USER"` する。
+
+```bash
+make -f Makefile.agent uninstall-service
+```
+
+### Windows 側 (ログイン前起動)
+
+WSL は Windows 側が起動しないと distro が起きない。所有者の Windows ユーザーで、起動時に distro を維持するタスクを登録する。PowerShell でリポジトリのスクリプトを実行する。既定の distro 名は `Debian` である。違う名前なら `-Distro` を付ける。
+
+```powershell
+cd \\wsl$\Debian\home\<user>\workspace\web-cursor-agent\deploy\windows
+powershell -ExecutionPolicy Bypass -File .\register-wsl-autostart.ps1
+```
+
+確認は次のとおり。
+
+```powershell
+Start-ScheduledTask -TaskName web-cursor-agent-wsl
+wsl -l -v
+```
+
+WSL が `Running` になったあと、WSL 内で `systemctl --user status web-cursor-agent` が active なら成功である。
+
+手動でタスクを作る場合の要点は次のとおり。
+
+- プログラムは `C:\Program Files\WSL\wsl.exe` を優先する。無ければ `C:\Windows\System32\wsl.exe`。
+- 引数は `-d Debian -u root -- sleep infinity`。
+- トリガーは「スタートアップ時」、遅延は 30〜60 秒。
+- 「ユーザーがログオンしているかどうかにかかわらず実行する」。
+- 「タスクを停止するまでの時間」は無効にする。
+
+解除は次を実行する。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\unregister-wsl-autostart.ps1
+```
+
+### ログイン前起動が失敗したとき
+
+起動時タスクを実行しても WSL が `Running` にならない、または `wsl.exe` がすぐ失敗する場合は、同じスクリプトをログオン時起動へ切り替える。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register-wsl-autostart.ps1 -AtLogOn
+```
+
+WSL 内の systemd 設定はそのままでよい。
 
 設計の詳細は [README.design.md](README.design.md) にまとめてある。
 
@@ -130,3 +205,5 @@ netsh advfirewall firewall add rule name="web-cursor-agent 8787" dir=in action=a
 - 設定ツール
     - ユーザーの追加・更新
         - ユーザー名の入力とパスワードの入力を受け付けて `users.yaml` に追加・更新する。
+    - `gh-login` / `gh-status`
+        - ユーザーごとの `XDG_CONFIG_HOME` で GitHub CLI のログインと状態確認を行う。

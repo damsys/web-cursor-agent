@@ -1,11 +1,17 @@
-.PHONY: help deps build test fmt web-deps web-build web-test web-fmt go-build go-test go-fmt
+.PHONY: help deps build test fmt web-deps web-build web-test web-fmt go-build go-test go-fmt install-service uninstall-service
+
+REPO_ROOT := $(abspath .)
+UNIT_SRC := deploy/systemd/web-cursor-agent.user.service
+UNIT_DST := $(HOME)/.config/systemd/user/web-cursor-agent.service
 
 help:
 	@printf '%s\n' \
-		'deps   npm からフロントエンドの依存パッケージを取得する' \
-		'build  画面用資産の配置とサーバのビルドを行う' \
-		'test   フロントエンド資産と Go のテストを実行する' \
-		'fmt    スクリプトと Go のソースを整形する'
+		'deps              npm からフロントエンドの依存パッケージを取得する' \
+		'build             画面用資産の配置とサーバのビルドを行う' \
+		'test              フロントエンド資産と Go のテストを実行する' \
+		'fmt               スクリプトと Go のソースを整形する' \
+		'install-service   systemd user サービスとして常駐起動する' \
+		'uninstall-service systemd user サービスを解除する'
 
 deps: web-deps
 
@@ -35,3 +41,26 @@ go-test:
 
 go-build:
 	mise exec -- go build -o bin/web-cursor-agent ./cmd/web-cursor-agent
+
+# ログイン前でも user サービスを起動できるよう linger を有効にし、unit を配置して有効化する。
+install-service:
+	@test -x "$(REPO_ROOT)/bin/web-cursor-agent" || { \
+		echo "error: missing executable: $(REPO_ROOT)/bin/web-cursor-agent (run make -f Makefile.agent build)" >&2; \
+		exit 1; \
+	}
+	@test -f "$(REPO_ROOT)/config.yaml" || { \
+		echo "error: missing config: $(REPO_ROOT)/config.yaml" >&2; \
+		exit 1; \
+	}
+	mkdir -p "$(HOME)/.config/systemd/user"
+	sed 's|@REPO_ROOT@|$(REPO_ROOT)|g' "$(UNIT_SRC)" > "$(UNIT_DST)"
+	systemctl --user daemon-reload
+	loginctl enable-linger "$(USER)"
+	systemctl --user enable --now web-cursor-agent.service
+	@systemctl --user --no-pager --full status web-cursor-agent.service || true
+
+# unit を止め、無効化し、配置したファイルを削除する。linger は他用途の可能性があるため触らない。
+uninstall-service:
+	-systemctl --user disable --now web-cursor-agent.service
+	rm -f "$(UNIT_DST)"
+	systemctl --user daemon-reload
