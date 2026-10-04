@@ -73,7 +73,7 @@ bin/web-cursor-agent serve --config config.yaml
 networkingMode=mirrored
 ```
 
-ミラーモードでは Windows の LAN アドレスが WSL からも見える。受信は Hyper-V ファイアウォールで TCP `8787` だけ許可する。管理者の PowerShell で次を実行する。WSL 仮想マシンの ID は `{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` である。
+ミラーモードでは Windows の LAN アドレスが WSL からも見える。受信は Hyper-V ファイアウォールで TCP `8787` だけ許可する。管理者の PowerShell で次を実行する。`{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` は、WSL という作成元を表すどの PC でも同じ ID である。
 
 ```powershell
 New-NetFirewallHyperVRule -Name "web-cursor-agent" -DisplayName "web-cursor-agent" -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" -Protocol TCP -LocalPorts 8787
