@@ -315,7 +315,7 @@ function renderTerminal(projectId, chatId) {
       return;
     }
     draft.value = "";
-    sendInput(`${text}\r`);
+    sendDraft(text);
   });
   document.querySelector("#floats").addEventListener("click", (event) => {
     const key = event.target.closest("button")?.dataset.key;
@@ -378,6 +378,15 @@ function fitTerminal() {
       }),
     );
   }
+}
+
+// sendDraft は本文を一度に送り、その後に Enter でエージェントの入力を確定する。
+// 同じ入力に含めた復帰は本文の改行になるため、Enter は別のキーとして届ける。
+function sendDraft(text) {
+  sendInput(text);
+  window.setTimeout(() => {
+    sendInput("\r");
+  }, 80);
 }
 
 function sendInput(data) {

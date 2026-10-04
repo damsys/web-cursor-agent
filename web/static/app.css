@@ -7,7 +7,7 @@
   --line: #2a3342;
   --accent: #7aa2f7;
   --danger: #f7768e;
-  --float: rgba(23, 28, 36, 0.62);
+  --float: rgba(23, 28, 36, 0.12);
 }
 
 * {
@@ -188,8 +188,9 @@ textarea {
 
 .floats {
   position: fixed;
-  right: 12px;
-  bottom: calc(132px + env(safe-area-inset-bottom));
+  top: calc(64px + env(safe-area-inset-top));
+  right: calc(8px + env(safe-area-inset-right));
+  z-index: 2;
   display: grid;
   grid-template-columns: repeat(3, 52px);
   grid-template-areas:
@@ -201,7 +202,7 @@ textarea {
   padding: 10px;
   border-radius: 16px;
   background: var(--float);
-  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .floats .up {
@@ -222,9 +223,10 @@ textarea {
 
 .floats button {
   height: 52px;
-  border: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.14);
+  background: transparent;
+  color: rgba(232, 237, 245, 0.45);
 }
 
 .floats .enter,

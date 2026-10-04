@@ -64,10 +64,10 @@ bin/web-cursor-agent cursor-login --config config.yaml --username alice
 bin/web-cursor-agent serve --config config.yaml
 ```
 
-6. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。同じ LAN の別端末から Windows の LAN アドレスで開くには、管理者の PowerShell で WSL の localhost へ転送する。
+6. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。同じ LAN の別端末から Windows の LAN アドレスで開くには、管理者の PowerShell で WSL の eth0 アドレスへ転送する。接続先を `127.0.0.1` にすると、`0.0.0.0` で待つ転送自身へ戻る。アドレスは WSL で `hostname -I` を実行して得る。WSL の再起動で変わることがある。
 
 ```powershell
-netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8787 connectaddress=127.0.0.1 connectport=8787
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8787 connectaddress=<WSL の eth0 アドレス> connectport=8787
 netsh advfirewall firewall add rule name="web-cursor-agent 8787" dir=in action=allow protocol=TCP localport=8787 profile=private
 ```
 
