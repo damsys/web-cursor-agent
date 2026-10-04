@@ -190,18 +190,18 @@ textarea {
 
 .floats {
   position: fixed;
-  top: calc(64px + env(safe-area-inset-top));
+  /* 入力欄の上に重ねず、画面右下へ置く。 */
   right: calc(8px + env(safe-area-inset-right));
+  bottom: calc(8px + 5.5rem + 24px + env(safe-area-inset-bottom));
   z-index: 2;
   display: grid;
   grid-template-columns: repeat(3, 52px);
   grid-template-areas:
     ". up ."
     "left down right"
-    "enter enter enter"
-    "hide hide hide";
+    "enter enter enter";
   gap: 8px;
-  padding: 10px;
+  padding: 28px 10px 10px;
   border-radius: 16px;
   background: var(--float);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -231,9 +231,21 @@ textarea {
   color: rgba(232, 237, 245, 0.45);
 }
 
-.floats .enter,
-.floats .hide {
+.floats .enter {
   grid-column: 1 / -1;
+}
+
+.floats .hide {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 .floats.is-hidden {

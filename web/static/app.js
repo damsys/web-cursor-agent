@@ -259,12 +259,12 @@ function renderTerminal(projectId, chatId) {
         <button class="primary" type="submit">送信</button>
       </form>
       <div class="floats" id="floats">
+        <button class="hide" id="hide-floats" type="button" aria-label="操作キーを隠す">×</button>
         <button class="up" type="button" data-key="up">↑</button>
         <button class="left" type="button" data-key="left">←</button>
         <button class="down" type="button" data-key="down">↓</button>
         <button class="right" type="button" data-key="right">→</button>
         <button class="enter" type="button" data-key="enter">Enter</button>
-        <button class="hide" id="hide-floats" type="button">操作キーを隠す</button>
       </div>
     </main>
   `;
