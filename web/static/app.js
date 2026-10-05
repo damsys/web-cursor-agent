@@ -138,10 +138,18 @@ async function renderProjects() {
         <button class="secondary" id="logout" type="button">ログアウト</button>
       </div>
       <div id="project-list" class="stack"></div>
+      <section class="maintenance" id="maintenance">
+        <h2>メンテナンス</h2>
+        <p class="meta">ビルド済みのバイナリでサービスを上げ直します。接続中の端末は切断されます。</p>
+        <button class="secondary" id="restart-service" type="button">サービスを再起動</button>
+      </section>
       <p class="meta build-info" id="build-info">ビルド: …</p>
     </main>
   `;
   document.querySelector("#logout").addEventListener("click", logout);
+  document
+    .querySelector("#restart-service")
+    .addEventListener("click", onRestartServiceClick);
   const list = document.querySelector("#project-list");
   renderBuildInfo();
   try {
@@ -172,6 +180,79 @@ async function renderProjects() {
     list.innerHTML = `<p class="error"></p>`;
     list.querySelector(".error").textContent = error.message;
   }
+}
+
+function onRestartServiceClick() {
+  const confirmed = window.confirm(
+    "サービスを再起動します。接続中の端末セッションは切断されます。よろしいですか？",
+  );
+  if (!confirmed) {
+    return;
+  }
+  restartService();
+}
+
+async function restartService() {
+  app.innerHTML = `
+    <main class="screen narrow">
+      <h1>メンテナンス</h1>
+      <p id="restart-status">再起動しています…（数十秒かかることがあります）</p>
+      <p class="error" id="restart-error"></p>
+    </main>
+  `;
+  const status = document.querySelector("#restart-status");
+  const error = document.querySelector("#restart-error");
+  try {
+    await api("/api/maintenance/restart", {
+      method: "POST",
+      body: "{}",
+    });
+  } catch (caught) {
+    error.textContent = caught.message;
+    status.textContent = "再起動を開始できませんでした。";
+    const back = document.createElement("button");
+    back.className = "secondary";
+    back.type = "button";
+    back.textContent = "戻る";
+    back.addEventListener("click", () => {
+      renderProjects();
+    });
+    app.querySelector("main").append(back);
+    return;
+  }
+  try {
+    await waitForServerAfterRestart();
+    await renderProjects();
+  } catch (caught) {
+    status.textContent = "再起動の完了を確認できませんでした。";
+    error.textContent = caught.message;
+  }
+}
+
+// サーバ停止〜起動のあいだ fetch が失敗するので、復帰するまで /api/me を待つ。
+async function waitForServerAfterRestart() {
+  await sleep(3000);
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    try {
+      me = await api("/api/me");
+      return;
+    } catch (error) {
+      if (error.status === 401) {
+        me = null;
+        renderLogin("");
+        throw new Error("再起動後にログインが必要です");
+      }
+      await sleep(1500);
+    }
+  }
+  throw new Error("ページを再読み込みしてください");
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 // 配信中の版を判別できるよう、ビルド時に生成した build-info.js の値を表示する。

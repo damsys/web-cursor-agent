@@ -58,6 +58,8 @@ UNIX ユーザーをアプリのユーザーごとに作る方式は採らない
 
 状態を変えるリクエストと WebSocket は、`Origin` がリクエストの Host と一致するときだけ受け付ける。
 
+ログイン済みユーザーは `POST /api/maintenance/restart` でサービス再起動を予約できる。サーバは `systemd-run --user` で自プロセスから切り離し、短時間待ってから `systemctl --user restart web-cursor-agent.service` を実行する。ビルドは含めない。進行中の再起動予約があるあいだの再リクエストは拒否する。
+
 `mac_check` の既定は有効である。WSL2 の NAT では、サーバから見える接続元が Windows 側の仮想アダプタになり、スマートフォンの MAC アドレスを観測できない。その環境では `mac_check` を無効にし、パスワードと同一セグメント制限で運用する。Linux や WSL のミラーモードのように、接続元が同一 L2 に見える場合は有効のままにする。
 
 ## 仮想端末

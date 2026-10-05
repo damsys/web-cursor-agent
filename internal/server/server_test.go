@@ -156,6 +156,50 @@ func TestRejectsUnlistedMAC(t *testing.T) {
 	}
 }
 
+func TestMaintenanceRestart(t *testing.T) {
+	srv, ts := testServer(t)
+	defer ts.Close()
+	defer srv.Close()
+
+	res := postJSON(t, ts, "/api/maintenance/restart", `{}`, "")
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d body = %s", res.StatusCode, body)
+	}
+
+	login := postJSON(t, ts, "/api/login", `{"username":"alice","password":"secret"}`, "")
+	if login.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d", login.StatusCode)
+	}
+	cookie := login.Cookies()[0]
+	login.Body.Close()
+	cookieHdr := cookie.Name + "=" + cookie.Value
+
+	scheduled := 0
+	srv.scheduleRestart = func() error {
+		scheduled++
+		return nil
+	}
+
+	res = postJSON(t, ts, "/api/maintenance/restart", `{}`, cookieHdr)
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusAccepted || !bytes.Contains(body, []byte(`"ok":true`)) {
+		t.Fatalf("restart status = %d body = %s", res.StatusCode, body)
+	}
+
+	res = postJSON(t, ts, "/api/maintenance/restart", `{}`, cookieHdr)
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("second restart status = %d body = %s", res.StatusCode, body)
+	}
+	if scheduled != 1 {
+		t.Fatalf("scheduled = %d, want 1", scheduled)
+	}
+}
+
 func testServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()

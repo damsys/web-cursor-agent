@@ -48,9 +48,14 @@ type Server struct {
 	lookupMAC func(net.IP) (string, bool)
 	remoteIP  func(*http.Request) net.IP
 	launch    LaunchFunc
-	sessions  *sessionStore
-	runtimes  *runtimeHub
-	limiter   *loginLimiter
+	// scheduleRestart はテストで差し替え可能。nil のときは systemd-run による実再起動。
+	scheduleRestart func() error
+	sessions        *sessionStore
+	runtimes        *runtimeHub
+	limiter         *loginLimiter
+
+	restartMu      sync.Mutex
+	restartPending bool
 }
 
 // New は設定に沿ったサーバを作る。テストは nil の関数を本番の実装に置き換わる既定値として扱う。
@@ -66,6 +71,7 @@ func New(cfg config.Config) *Server {
 		runtimes:  newRuntimeHub(maxSessions),
 		limiter:   newLoginLimiter(loginFailures, loginWindow),
 	}
+	server.scheduleRestart = server.scheduleServiceRestart
 	server.allowsIP = func(ip net.IP) bool {
 		ok, err := security.SameSegment(ip, cfg.Networks)
 		if err != nil {
@@ -86,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/build", s.handleBuild)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleSessions)
+	mux.HandleFunc("POST /api/maintenance/restart", s.handleMaintenanceRestart)
 	mux.HandleFunc("GET /ws/terminal", s.handleTerminal)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.Handle(

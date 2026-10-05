@@ -153,6 +153,8 @@ systemctl --user restart web-cursor-agent
 systemctl --user status web-cursor-agent
 ```
 
+ビルドまで済ませたあとなら、プロジェクト一覧の「メンテナンス」からサービス再起動だけを実行できる。再起動は systemd user サービス経由で予約され、接続中の端末セッションは切断される。
+
 unit テンプレート (`deploy/systemd/web-cursor-agent.user.service`) やインストール手順が変わったときだけ、再ビルドのあとに `make -f Makefile.agent install-service` をやり直す。Windows の登録スクリプトが変わったときだけ、`register-wsl-autostart.ps1` を再実行する。
 
 ### Windows 側 (ログイン前起動)
