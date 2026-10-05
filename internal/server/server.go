@@ -380,6 +380,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 			term:           session,
 			grace:          s.cfg.DetachGrace,
 			hub:            s.runtimes,
+			scrollback:     newByteRing(scrollbackMax),
 			detachedBuffer: newByteRing(detachBufferMax),
 			readerDone:     make(chan struct{}),
 		}
@@ -397,7 +398,9 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(maxInputBytes + 1024)
-	intentionalClose, agentExited := s.relay(r.Context(), conn, rt)
+	// ページ再読込など空の端末向け。同一画面の再接続では付けず、差分だけを受け取る。
+	replay := r.URL.Query().Get("replay") == "1"
+	intentionalClose, agentExited := s.relay(r.Context(), conn, rt, replay)
 	if agentExited {
 		log.Printf("agent stopped user=%s project=%s chat=%s runtime=%s code=%d", user.Username, project.ID, chatID, rt.id, rt.ExitCode())
 		return
@@ -411,12 +414,12 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	log.Printf("agent detached user=%s project=%s runtime=%s intentional=%v activity=%v", user.Username, project.ID, rt.id, intentionalClose, rt.Activity())
 }
 
-func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSession) (intentionalClose bool, agentExited bool) {
+func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSession, replay bool) (intentionalClose bool, agentExited bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	buffered, live, ok := rt.AttachOutput()
+	buffered, live, ok := rt.AttachOutput(replay)
 	if !ok {
 		payload, _ := json.Marshal(map[string]any{"type": "exit", "code": rt.ExitCode()})
 		writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)

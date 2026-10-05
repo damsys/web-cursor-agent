@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	detachBufferMax = 512 * 1024
+	// scrollbackMax は接続中も含め端末出力を保持する上限。ページ再読込時の replay に使う。
+	scrollbackMax   = 512 * 1024
+	detachBufferMax = scrollbackMax
 	outputSinkSize  = 64
 )
 
@@ -29,6 +31,7 @@ type runtimeSession struct {
 	mu             sync.Mutex
 	activity       AgentActivity
 	sink           chan []byte
+	scrollback     *byteRing
 	detachedBuffer *byteRing
 	graceTimer     *time.Timer
 	closed         bool
@@ -62,6 +65,16 @@ func (r *byteRing) Write(p []byte) {
 func (r *byteRing) Take() []byte {
 	out := r.buf
 	r.buf = nil
+	return out
+}
+
+// Snapshot は保持内容のコピーを返す。リング自体は消さない。
+func (r *byteRing) Snapshot() []byte {
+	if len(r.buf) == 0 {
+		return nil
+	}
+	out := make([]byte, len(r.buf))
+	copy(out, r.buf)
 	return out
 }
 
@@ -134,6 +147,8 @@ func (rt *runtimeSession) Activity() AgentActivity {
 
 func (rt *runtimeSession) deliver(payload []byte) {
 	rt.mu.Lock()
+	// 接続中も scrollback へ tee し、ページ再読込後の空画面を避けられるようにする。
+	rt.scrollback.Write(payload)
 	sink := rt.sink
 	if sink == nil {
 		rt.detachedBuffer.Write(payload)
@@ -147,8 +162,10 @@ func (rt *runtimeSession) deliver(payload []byte) {
 	}
 }
 
-// AttachOutput は切断中に溜めた出力を返し、以降の出力を channel へ流す。
-func (rt *runtimeSession) AttachOutput() (buffered []byte, live <-chan []byte, ok bool) {
+// AttachOutput は再接続用の出力を返し、以降の出力を channel へ流す。
+// replay が true のときは保持している scrollback 全体を返す (ページ再読込向け)。
+// false のときは切断中に溜まった差分だけを返す (同一画面の再接続向け)。
+func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-chan []byte, ok bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.closed {
@@ -159,7 +176,12 @@ func (rt *runtimeSession) AttachOutput() (buffered []byte, live <-chan []byte, o
 		close(rt.sink)
 		rt.sink = nil
 	}
-	buffered = rt.detachedBuffer.Take()
+	if replay {
+		buffered = rt.scrollback.Snapshot()
+		_ = rt.detachedBuffer.Take()
+	} else {
+		buffered = rt.detachedBuffer.Take()
+	}
 	sink := make(chan []byte, outputSinkSize)
 	rt.sink = sink
 	return buffered, sink, true

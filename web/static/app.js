@@ -373,6 +373,8 @@ function renderTerminal(projectId, chatId) {
     projectId,
     chatId,
     attachID: loadAttachID(projectId, chatId),
+    // 新しい xterm ではサーバ側 scrollback を再生する。同一画面の再接続では差分だけにする。
+    replayScrollback: true,
     seenHello: false,
     hidden: false,
     leaving: false,
@@ -470,6 +472,13 @@ function connectTerminal() {
   if (terminalSession.attachID) {
     params.set("attach", terminalSession.attachID);
   }
+  if (terminalSession.replayScrollback) {
+    params.set("replay", "1");
+  }
+  // フルリロードでは close ハンドラが走らないため、attach がある初回接続で再接続中と出す。
+  if (terminalSession.replayScrollback && terminalSession.attachID) {
+    term.writeln("再接続しています…");
+  }
   const socket = new WebSocket(
     `${protocol}//${location.host}/ws/terminal?${params.toString()}`,
   );
@@ -486,7 +495,15 @@ function connectTerminal() {
       if (message.type === "hello" && message.attach) {
         terminalSession.seenHello = true;
         terminalSession.attachID = message.attach;
+        // ページ再読込前に本文だけ送られ Enter が欠けた場合、PTY に未確定行が残る。
+        // 毎送信の Ctrl+U は agent の確定を妨げるため、replay 直後の一度だけ消す。
+        const clearStaleLine = terminalSession.replayScrollback;
+        // hello 以降は同一画面の再接続になるので、差分バッファだけを要求する。
+        terminalSession.replayScrollback = false;
         saveAttachID(projectId, chatId, message.attach);
+        if (clearStaleLine) {
+          sendInput("\u0015");
+        }
         return;
       }
       if (message.type === "exit") {

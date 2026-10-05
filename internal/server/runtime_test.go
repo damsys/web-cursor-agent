@@ -61,6 +61,49 @@ func TestTerminalDetachAndReattach(t *testing.T) {
 	waitOutputContains(t, ctx, conn2, "again")
 }
 
+func TestTerminalReplayScrollbackOnReattach(t *testing.T) {
+	srv, ts := testServer(t)
+	srv.cfg.DetachGrace = time.Minute
+	defer ts.Close()
+	defer srv.Close()
+
+	cookie := loginCookie(t, ts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn1 := dialTerminal(t, ctx, ts, cookie, "project=app")
+	hello := readJSONMessage(t, ctx, conn1)
+	attach, _ := hello["attach"].(string)
+	if attach == "" {
+		t.Fatal("missing attach id")
+	}
+	if err := conn1.Write(ctx, websocket.MessageText, []byte(`{"type":"input","data":"before-reload\n"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitOutputContains(t, ctx, conn1, "before-reload")
+	_ = conn1.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := srv.runtimes.Lookup(attach, "alice"); ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, ok := srv.runtimes.Lookup(attach, "alice"); !ok {
+		t.Fatal("runtime should remain after websocket close")
+	}
+
+	// ページ再読込相当: replay=1 で切断前の出力も受け取る。
+	conn2 := dialTerminal(t, ctx, ts, cookie, "project=app&attach="+attach+"&replay=1")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	hello2 := readJSONMessage(t, ctx, conn2)
+	if hello2["attach"] != attach {
+		t.Fatalf("reattach hello = %#v", hello2)
+	}
+	waitOutputContains(t, ctx, conn2, "before-reload")
+}
+
 func TestTerminalIdleCloseTerminates(t *testing.T) {
 	srv, ts := testServer(t)
 	srv.cfg.DetachGrace = time.Minute
