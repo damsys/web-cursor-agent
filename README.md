@@ -28,6 +28,8 @@
 make -f Makefile.agent build
 ```
 
+ビルド時に git の短ハッシュと未コミット有無が `web/static/build-info.js` へ書き出される。ログイン後のプロジェクト一覧下部に `ビルド: <hash>` または `ビルド: <hash> +未コミット` と表示され、フロント資産のスーパーリロード確認にも使える。index.html 配信時は app.js/css/build-info.js にその版の query を付け、古い画面資産の再利用を避ける。
+
 ## ユーザーの追加
 
 1. 依存ツールを入れ、サーバと画面用ファイルを作る。

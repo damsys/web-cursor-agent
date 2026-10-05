@@ -1,5 +1,7 @@
 web/node_modules/
 web/dist/
+web/static/build-info.json
+web/static/build-info.js
 bin/
 var/
 config.yaml

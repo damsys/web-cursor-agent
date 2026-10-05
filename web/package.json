@@ -7,7 +7,7 @@
     "node": "22.22.1"
   },
   "scripts": {
-    "build": "node scripts/copy-assets.js",
+    "build": "node scripts/write-build-info.js && node scripts/copy-assets.js",
     "test": "node scripts/verify-assets.js",
     "fmt": "prettier --write scripts static",
     "fmt:check": "prettier --check scripts static"

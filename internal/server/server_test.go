@@ -80,6 +80,50 @@ func TestLoginProjectsAndTerminal(t *testing.T) {
 	}
 }
 
+func TestBuildInfoAndIndexCacheBust(t *testing.T) {
+	srv, ts := testServer(t)
+	defer ts.Close()
+	defer srv.Close()
+
+	staticDir := filepath.Join(srv.cfg.WebDir, "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	index := `<!doctype html><link rel="stylesheet" href="/static/app.css" /><script src="/static/build-info.js"></script><script src="/static/app.js"></script>`
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte(index), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildInfo := `{"commit":"abc1234","dirty":true,"builtAt":"2026-01-02T03:04:05Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(staticDir, "build-info.json"), []byte(buildInfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	buildRes, err := http.Get(ts.URL + "/api/build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildBody, _ := io.ReadAll(buildRes.Body)
+	buildRes.Body.Close()
+	if buildRes.StatusCode != http.StatusOK ||
+		!bytes.Contains(buildBody, []byte(`"commit":"abc1234"`)) ||
+		!bytes.Contains(buildBody, []byte(`"dirty":true`)) {
+		t.Fatalf("build = %d %s", buildRes.StatusCode, buildBody)
+	}
+
+	indexRes, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexBody, _ := io.ReadAll(indexRes.Body)
+	indexRes.Body.Close()
+	if indexRes.StatusCode != http.StatusOK ||
+		!bytes.Contains(indexBody, []byte(`/static/app.js?v=abc1234-dirty-2026-01-02T03:04:05Z`)) ||
+		!bytes.Contains(indexBody, []byte(`/static/app.css?v=abc1234-dirty-2026-01-02T03:04:05Z`)) ||
+		!bytes.Contains(indexBody, []byte(`/static/build-info.js?v=abc1234-dirty-2026-01-02T03:04:05Z`)) {
+		t.Fatalf("index = %d %s", indexRes.StatusCode, indexBody)
+	}
+}
+
 func TestRejectsWrongPasswordAndForeignNetwork(t *testing.T) {
 	srv, ts := testServer(t)
 	defer ts.Close()

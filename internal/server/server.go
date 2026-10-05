@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,11 +83,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/build", s.handleBuild)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleSessions)
 	mux.HandleFunc("GET /ws/terminal", s.handleTerminal)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.cfg.StaticDir()))))
+	mux.Handle(
+		"GET /static/",
+		http.StripPrefix("/static/", noCacheStatic(http.FileServer(http.Dir(s.cfg.StaticDir())))),
+	)
 	mux.Handle("GET /vendor/", http.StripPrefix("/vendor/", http.FileServer(http.Dir(s.cfg.VendorDir()))))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -109,7 +114,83 @@ func (s *Server) Close() {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, s.cfg.StaticDir()+"/index.html")
+	// ビルド版を query に載せ、iOS Safari などが古い app.js/css を掴み続けるのを避ける。
+	data, err := os.ReadFile(filepath.Join(s.cfg.StaticDir(), "index.html"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	version := s.buildInfo().cacheVersion()
+	html := string(data)
+	html = strings.ReplaceAll(
+		html,
+		`href="/static/app.css"`,
+		`href="/static/app.css?v=`+version+`"`,
+	)
+	html = strings.ReplaceAll(
+		html,
+		`src="/static/build-info.js"`,
+		`src="/static/build-info.js?v=`+version+`"`,
+	)
+	html = strings.ReplaceAll(
+		html,
+		`src="/static/app.js"`,
+		`src="/static/app.js?v=`+version+`"`,
+	)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write([]byte(html))
+}
+
+func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, s.buildInfo())
+}
+
+type buildInfo struct {
+	Commit  string `json:"commit"`
+	Dirty   bool   `json:"dirty"`
+	BuiltAt string `json:"builtAt,omitempty"`
+}
+
+func (info buildInfo) cacheVersion() string {
+	version := info.Commit
+	if version == "" {
+		version = "unknown"
+	}
+	if info.Dirty {
+		version += "-dirty"
+	}
+	if info.BuiltAt != "" {
+		version += "-" + info.BuiltAt
+	}
+	return version
+}
+
+func (s *Server) buildInfo() buildInfo {
+	path := filepath.Join(s.cfg.StaticDir(), "build-info.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return buildInfo{Commit: "unknown"}
+	}
+	var info buildInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return buildInfo{Commit: "unknown"}
+	}
+	if info.Commit == "" {
+		info.Commit = "unknown"
+	}
+	return info
+}
+
+func noCacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch filepath.Base(r.URL.Path) {
+		case "app.js", "app.css", "build-info.js", "build-info.json", "index.html":
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
