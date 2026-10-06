@@ -61,24 +61,50 @@ func TestWorkspaceHashAndChats(t *testing.T) {
 		t.Fatalf("hash = %s", got)
 	}
 	data := t.TempDir()
-	chatDir := filepath.Join(data, "chats", WorkspaceHash(project), "11111111-1111-1111-1111-111111111111")
-	if err := os.MkdirAll(chatDir, 0o700); err != nil {
+	listedID := "11111111-1111-1111-1111-111111111111"
+	emptyID := "22222222-2222-2222-2222-222222222222"
+	subID := "33333333-3333-3333-3333-333333333333"
+	hiddenID := "44444444-4444-4444-4444-444444444444"
+	writeMeta := func(id, meta string) {
+		t.Helper()
+		dir := filepath.Join(data, "chats", WorkspaceHash(project), id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMeta(listedID, `{"title":"例","createdAtMs":10,"updatedAtMs":20,"hasConversation":true,"cwd":"/work/app"}`)
+	writeMeta(emptyID, `{"createdAtMs":11,"updatedAtMs":21,"hasConversation":false,"cwd":"/work/app"}`)
+	writeMeta(subID, `{"createdAtMs":12,"updatedAtMs":22,"hasConversation":true,"isSubagent":true}`)
+	writeMeta(hiddenID, `{"title":"隠す","createdAtMs":13,"updatedAtMs":23,"hasConversation":true,"cwd":"/work/app"}`)
+	if err := HideChat(data, project, hiddenID); err != nil {
 		t.Fatal(err)
 	}
-	meta := `{"title":"例","createdAtMs":10,"updatedAtMs":20,"hasConversation":true,"cwd":"/work/app"}`
-	if err := os.WriteFile(filepath.Join(chatDir, "meta.json"), []byte(meta), 0o600); err != nil {
-		t.Fatal(err)
-	}
+
 	chats, err := ListChats(data, project)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chats) != 1 || chats[0].Title != "例" || chats[0].UpdatedAtMs != 20 {
+	if len(chats) != 1 || chats[0].ID != listedID || chats[0].Title != "例" || chats[0].UpdatedAtMs != 20 {
 		t.Fatalf("chats = %#v", chats)
 	}
-	ok, err := HasChat(data, project, chats[0].ID)
-	if err != nil || !ok {
-		t.Fatalf("has chat ok=%v err=%v", ok, err)
+	for _, id := range []string{listedID, emptyID, subID, hiddenID} {
+		ok, err := HasChat(data, project, id)
+		if err != nil || !ok {
+			t.Fatalf("has chat %s ok=%v err=%v", id, ok, err)
+		}
+	}
+	if err := UnhideChat(data, project, hiddenID); err != nil {
+		t.Fatal(err)
+	}
+	chats, err = ListChats(data, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 2 {
+		t.Fatalf("after unhide chats = %#v", chats)
 	}
 }
 

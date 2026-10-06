@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -109,6 +110,13 @@ func (l Layout) Environ(base []string) []string {
 	return out
 }
 
+// ErrChatNotFound は指定したチャット履歴が存在しないことを表す。
+var ErrChatNotFound = errors.New("chat not found")
+
+// hiddenMarkerName は一覧から外すセッションに置くマーカーファイル名である。
+// meta.json は agent が所有するため触れず、チャットディレクトリ内の空ファイルで表現する。
+const hiddenMarkerName = ".wca-hidden"
+
 // Chat はプロジェクトに紐づく既存のエージェントセッションである。
 type Chat struct {
 	ID              string `json:"id"`
@@ -123,6 +131,7 @@ type chatMeta struct {
 	CreatedAtMs     int64  `json:"createdAtMs"`
 	UpdatedAtMs     int64  `json:"updatedAtMs"`
 	HasConversation bool   `json:"hasConversation"`
+	IsSubagent      bool   `json:"isSubagent"`
 	Cwd             string `json:"cwd"`
 }
 
@@ -132,7 +141,16 @@ func WorkspaceHash(projectPath string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func chatDir(dataDir, projectPath, chatID string) string {
+	return filepath.Join(dataDir, "chats", WorkspaceHash(projectPath), chatID)
+}
+
+func hiddenMarkerPath(dataDir, projectPath, chatID string) string {
+	return filepath.Join(chatDir(dataDir, projectPath, chatID), hiddenMarkerName)
+}
+
 // ListChats はプロジェクトの絶対パスに対応するチャット履歴を新しい順に返す。
+// 会話のない空セッション、サブエージェント、非表示マーカー付きは一覧から外す。
 func ListChats(dataDir, projectPath string) ([]Chat, error) {
 	dir := filepath.Join(dataDir, "chats", WorkspaceHash(projectPath))
 	entries, err := os.ReadDir(dir)
@@ -148,16 +166,14 @@ func ListChats(dataDir, projectPath string) ([]Chat, error) {
 			continue
 		}
 		id := entry.Name()
-		metaPath := filepath.Join(dir, id, "meta.json")
-		raw, err := os.ReadFile(metaPath)
-		if err != nil {
+		meta, ok := readChatMeta(filepath.Join(dir, id, "meta.json"), projectPath)
+		if !ok {
 			continue
 		}
-		var meta chatMeta
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if !meta.HasConversation || meta.IsSubagent {
 			continue
 		}
-		if meta.Cwd != "" && meta.Cwd != projectPath {
+		if _, err := os.Stat(filepath.Join(dir, id, hiddenMarkerName)); err == nil {
 			continue
 		}
 		updated := meta.UpdatedAtMs
@@ -182,17 +198,50 @@ func ListChats(dataDir, projectPath string) ([]Chat, error) {
 }
 
 // HasChat は再開対象のチャット ID がそのプロジェクトの履歴に存在するかを返す。
+// 一覧フィルタ（空・サブエージェント・非表示）とは独立し、深リンク再開を妨げない。
 func HasChat(dataDir, projectPath, chatID string) (bool, error) {
-	chats, err := ListChats(dataDir, projectPath)
+	_, ok := readChatMeta(filepath.Join(chatDir(dataDir, projectPath, chatID), "meta.json"), projectPath)
+	return ok, nil
+}
+
+// HideChat はセッションを一覧から外すマーカーを置く。履歴自体は削除しない。
+func HideChat(dataDir, projectPath, chatID string) error {
+	ok, err := HasChat(dataDir, projectPath, chatID)
 	if err != nil {
-		return false, err
+		return err
 	}
-	for _, chat := range chats {
-		if chat.ID == chatID {
-			return true, nil
-		}
+	if !ok {
+		return ErrChatNotFound
 	}
-	return false, nil
+	path := hiddenMarkerPath(dataDir, projectPath, chatID)
+	if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+		return fmt.Errorf("write hidden marker: %w", err)
+	}
+	return nil
+}
+
+// UnhideChat は一覧非表示マーカーを外す。マーカーが無ければ何もしない。
+func UnhideChat(dataDir, projectPath, chatID string) error {
+	path := hiddenMarkerPath(dataDir, projectPath, chatID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove hidden marker: %w", err)
+	}
+	return nil
+}
+
+func readChatMeta(metaPath, projectPath string) (chatMeta, bool) {
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		return chatMeta{}, false
+	}
+	var meta chatMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return chatMeta{}, false
+	}
+	if meta.Cwd != "" && meta.Cwd != projectPath {
+		return chatMeta{}, false
+	}
+	return meta, true
 }
 
 func readAPIKey(path string) (string, error) {

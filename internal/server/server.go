@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/build", s.handleBuild)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleSessions)
+	mux.HandleFunc("POST /api/projects/{id}/sessions/{chatId}/hide", s.handleHideSession)
 	mux.HandleFunc("POST /api/maintenance/restart", s.handleMaintenanceRestart)
 	mux.HandleFunc("GET /ws/terminal", s.handleTerminal)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
@@ -307,6 +308,39 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": chats})
+}
+
+func (s *Server) handleHideSession(w http.ResponseWriter, r *http.Request) {
+	user, ok := s.currentUser(w, r)
+	if !ok {
+		return
+	}
+	project, ok := s.cfg.Project(r.PathValue("id"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorBody("プロジェクトが見つかりません"))
+		return
+	}
+	chatID := r.PathValue("chatId")
+	if !chatIDPattern.MatchString(chatID) {
+		writeJSON(w, http.StatusNotFound, errorBody("セッションが見つかりません"))
+		return
+	}
+	layout, err := s.userLayout(user.Username)
+	if err != nil {
+		log.Printf("cursor layout: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("セッションを非表示にできません"))
+		return
+	}
+	if err := cursor.HideChat(layout.DataDir, project.Path, chatID); err != nil {
+		if errors.Is(err, cursor.ErrChatNotFound) {
+			writeJSON(w, http.StatusNotFound, errorBody("セッションが見つかりません"))
+			return
+		}
+		log.Printf("hide chat: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errorBody("セッションを非表示にできません"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {

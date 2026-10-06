@@ -320,8 +320,11 @@ async function renderSessions(projectId) {
       return;
     }
     for (const session of body.sessions) {
+      const row = document.createElement("div");
+      row.className = "session-row";
+
       const button = document.createElement("button");
-      button.className = "card";
+      button.className = "card session-open";
       button.type = "button";
       button.innerHTML = `<strong></strong><span></span>`;
       button.querySelector("strong").textContent = session.title || "無題";
@@ -331,7 +334,42 @@ async function renderSessions(projectId) {
       button.addEventListener("click", () => {
         location.hash = `#/projects/${encodeURIComponent(projectId)}/terminal/${encodeURIComponent(session.id)}`;
       });
-      list.append(button);
+
+      const hide = document.createElement("button");
+      hide.className = "secondary session-hide";
+      hide.type = "button";
+      hide.textContent = "非表示";
+      hide.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const confirmed = window.confirm(
+          "このセッションを一覧から外しますか？履歴は残ります。",
+        );
+        if (!confirmed) {
+          return;
+        }
+        hide.disabled = true;
+        try {
+          await api(
+            `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(session.id)}/hide`,
+            { method: "POST" },
+          );
+          row.remove();
+          if (!list.querySelector(".session-row")) {
+            list.innerHTML = `<p class="meta">セッションがありません</p>`;
+          }
+        } catch (caught) {
+          hide.disabled = false;
+          if (caught.status === 401) {
+            me = null;
+            renderLogin("");
+            return;
+          }
+          window.alert(caught.message);
+        }
+      });
+
+      row.append(button, hide);
+      list.append(row);
     }
   } catch (error) {
     if (error.status === 401) {
