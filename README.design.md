@@ -89,7 +89,7 @@ WebSocket のテキストフレームは JSON の制御メッセージである�
 
 `users.yaml` はユーザー名、パスワードハッシュ、MAC アドレスのリストを持つ。更新は `user upsert` が行い、一時ファイルへ書いてから置き換える。権限は `0600` とする。
 
-画面の HTML と CSS とスクリプトは `web/static` に置く。xterm のブラウザ向け成果物はリポジトリに同梱せず、`make -f Makefile.agent build` が npm から取得して `web/dist/vendor/` へコピーする。バージョンと整合性は `web/package-lock.json` に記録する。Node.js と Go のバージョンは `mise.toml` で固定する。ビルド時に git の短ハッシュと未コミット有無を `web/static/build-info.js`（と json）へ書き、プロジェクト一覧がフロント資産として直接読む。スーパーリロード確認にも使う。index.html 配信時は app.js/css/build-info.js にその版を query として付け、古い画面資産の再利用を避ける。
+画面の HTML と CSS とスクリプトは `web/static` に置く。xterm のブラウザ向け成果物はリポジトリに同梱せず、`make -f Makefile.agent build` が npm から取得して `web/dist/vendor/` へコピーする。バージョンと整合性は `web/package-lock.json` に記録する。Node.js と Go のバージョンは `mise.toml` で固定する。ビルド時に git の短ハッシュ・未コミット有無・ビルド日時を `web/static/build-info.js`（と json）へ書き、プロジェクト一覧がフロント資産として直接読む。未コミット時は同一ハッシュが続くため日時も表示し、スーパーリロード確認にも使う。index.html 配信時は app.js/css/build-info.js にその版を query として付け、古い画面資産の再利用を避ける。
 
 ## 画面の遷移
 

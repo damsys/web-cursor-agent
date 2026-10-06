@@ -256,6 +256,7 @@ function sleep(ms) {
 }
 
 // 配信中の版を判別できるよう、ビルド時に生成した build-info.js の値を表示する。
+// 未コミット時は同一ハッシュが続くため、ビルド日時も併記する。
 function renderBuildInfo() {
   const el = document.querySelector("#build-info");
   if (!el) {
@@ -267,7 +268,21 @@ function renderBuildInfo() {
     return;
   }
   const dirty = info.dirty ? " +未コミット" : "";
-  el.textContent = `ビルド: ${info.commit || "unknown"}${dirty}`;
+  const builtAt = formatBuildAt(info.builtAt);
+  const when = builtAt ? ` (${builtAt})` : "";
+  el.textContent = `ビルド: ${info.commit || "unknown"}${dirty}${when}`;
+}
+
+// 画面表示用に ISO 8601 のビルド日時をローカル時刻へ直す。
+function formatBuildAt(value) {
+  if (typeof value !== "string" || value === "") {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("ja-JP");
 }
 
 async function renderSessions(projectId) {
