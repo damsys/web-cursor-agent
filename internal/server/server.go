@@ -460,7 +460,7 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 	defer cancel()
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	buffered, live, activityLive, ok := rt.AttachOutput(replay)
+	buffered, live, statusLive, ok := rt.AttachOutput(replay)
 	if !ok {
 		payload, _ := json.Marshal(map[string]any{"type": "exit", "code": rt.ExitCode()})
 		writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -486,12 +486,16 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 		defer writeCancel()
 		return conn.Write(writeCtx, typ, data)
 	}
-	hello, _ := json.Marshal(map[string]any{
+	helloBody := map[string]any{
 		"type":     "hello",
 		"attach":   rt.id,
 		"chat":     rt.chatID,
 		"activity": ActivityName(rt.Activity()),
-	})
+	}
+	if title := rt.SessionTitle(); title != "" {
+		helloBody["title"] = title
+	}
+	hello, _ := json.Marshal(helloBody)
 	if err := write(websocket.MessageText, hello); err != nil {
 		return false, false
 	}
@@ -524,15 +528,19 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 			select {
 			case <-ctx.Done():
 				return
-			case state, open := <-activityLive:
+			case state, open := <-statusLive:
 				if !open {
-					activityLive = nil
+					statusLive = nil
 					continue
 				}
-				payload, _ := json.Marshal(map[string]any{
+				payloadBody := map[string]any{
 					"type":  "activity",
-					"state": ActivityName(state),
-				})
+					"state": ActivityName(state.Activity),
+				}
+				if state.Title != "" {
+					payloadBody["title"] = state.Title
+				}
+				payload, _ := json.Marshal(payloadBody)
 				if writeErr := write(websocket.MessageText, payload); writeErr != nil {
 					cancel()
 					return

@@ -23,6 +23,30 @@ func TestClassifyTitle(t *testing.T) {
 	}
 }
 
+func TestSessionNameFromTitle(t *testing.T) {
+	cases := []struct {
+		title string
+		want  string
+	}{
+		{"Cursor Title Display - ✅ Ready", "Cursor Title Display"},
+		{"Cursor Title Display - 📂 Loading conversation", "Cursor Title Display"},
+		{"Fix login - ⏳ Working…", "Fix login"},
+		{"Fix login - Waiting for you", "Fix login"},
+		{"Name - with dash - ✅ Ready", "Name - with dash"},
+		{"Cursor Agent - ✅ Ready", ""},
+		{"Ready | my-session", "my-session"},
+		{"Working… | Fix login", "Fix login"},
+		{"Ready", ""},
+		{"Cursor Agent", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := SessionNameFromTitle(tc.title); got != tc.want {
+			t.Fatalf("SessionNameFromTitle(%q) = %q, want %q", tc.title, got, tc.want)
+		}
+	}
+}
+
 func TestActivityName(t *testing.T) {
 	cases := []struct {
 		activity AgentActivity

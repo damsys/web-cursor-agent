@@ -203,6 +203,45 @@ func TestTerminalWaitingCloseDetaches(t *testing.T) {
 	t.Fatal("waiting close should keep runtime for grace period")
 }
 
+func TestTerminalActivityIncludesSessionTitle(t *testing.T) {
+	srv, ts := testServer(t)
+	defer ts.Close()
+	defer srv.Close()
+
+	cookie := loginCookie(t, ts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := dialTerminal(t, ctx, ts, cookie, "project=app")
+	hello := readJSONMessage(t, ctx, conn)
+	attach, _ := hello["attach"].(string)
+	rt, ok := srv.runtimes.Lookup(attach, "alice")
+	if !ok {
+		t.Fatal("runtime missing")
+	}
+
+	rt.setTitle("first-name - ✅ Ready")
+	msg := waitJSONMessage(t, ctx, conn, "activity")
+	if msg["state"] != "idle" || msg["title"] != "first-name" {
+		t.Fatalf("activity = %#v", msg)
+	}
+
+	// 状態が同じでも概要だけ変われば通知する。
+	rt.setTitle("second-name - ✅ Ready")
+	msg = waitJSONMessage(t, ctx, conn, "activity")
+	if msg["state"] != "idle" || msg["title"] != "second-name" {
+		t.Fatalf("renamed activity = %#v", msg)
+	}
+
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+	conn2 := dialTerminal(t, ctx, ts, cookie, "project=app&attach="+attach+"&replay=1")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	hello2 := readJSONMessage(t, ctx, conn2)
+	if hello2["title"] != "second-name" {
+		t.Fatalf("hello title = %#v", hello2)
+	}
+}
+
 func loginCookie(t *testing.T, ts *httptest.Server) *http.Cookie {
 	t.Helper()
 	res := postJSON(t, ts, "/api/login", `{"username":"alice","password":"secret"}`, "")
@@ -248,6 +287,31 @@ func readJSONMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) ma
 		return message
 	}
 	t.Fatal("timed out waiting for json message")
+	return nil
+}
+
+func waitJSONMessage(t *testing.T, ctx context.Context, conn *websocket.Conn, wantType string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		readCtx, cancel := context.WithTimeout(ctx, time.Second)
+		typ, data, err := conn.Read(readCtx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		var message map[string]any
+		if err := json.Unmarshal(data, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message["type"] == wantType {
+			return message
+		}
+	}
+	t.Fatalf("timed out waiting for %q message", wantType)
 	return nil
 }
 

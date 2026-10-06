@@ -34,6 +34,54 @@ func ClassifyTitle(title string) AgentActivity {
 	}
 }
 
+// SessionNameFromTitle は status indicators の端末タイトルからセッション概要を取り出す。
+// 現行 CLI は "概要 - ✅ Ready" / "概要 - ⏳ Working…" 形式。
+// 未命名時の "Cursor Agent - …" は概要なしとして扱う。
+func SessionNameFromTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	// 旧形式 "Ready | 概要" も受け付ける。
+	if head, tail, ok := strings.Cut(title, " | "); ok {
+		if ClassifyTitle(head) != AgentActivityUnknown || ClassifyTitle(title) != AgentActivityUnknown {
+			return cleanSessionName(tail)
+		}
+	}
+	// 現行形式: 末尾の " - <status>" を剥がす。概要自体に " - " が含まれる場合も考慮する。
+	rest := title
+	for {
+		idx := strings.LastIndex(rest, " - ")
+		if idx < 0 {
+			return ""
+		}
+		name := strings.TrimSpace(rest[:idx])
+		status := strings.TrimSpace(rest[idx+3:])
+		if name != "" && isStatusSuffix(status) {
+			return cleanSessionName(name)
+		}
+		rest = rest[:idx]
+	}
+}
+
+func isStatusSuffix(status string) bool {
+	if ClassifyTitle(status) != AgentActivityUnknown {
+		return true
+	}
+	lower := strings.ToLower(status)
+	return strings.Contains(lower, "loading")
+}
+
+func cleanSessionName(name string) string {
+	name = strings.TrimSpace(name)
+	switch strings.ToLower(name) {
+	case "", "cursor agent", "cursor", "agent":
+		return ""
+	default:
+		return name
+	}
+}
+
 // ActivityName は WebSocket 通知用の状態名を返す。
 func ActivityName(activity AgentActivity) string {
 	switch activity {

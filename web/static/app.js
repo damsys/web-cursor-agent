@@ -1,8 +1,18 @@
 const app = document.querySelector("#app");
+const defaultDocumentTitle = "Cursor";
 
 let me = null;
 let projects = [];
 let terminalSession = null;
+
+// ブラウザタブに現在の画面文脈が分かるよう、document.title を組み立てる。
+function setDocumentTitle(...parts) {
+  const title = parts
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" - ");
+  document.title = title || defaultDocumentTitle;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
   syncViewport();
@@ -90,6 +100,7 @@ function renderRoute() {
 }
 
 function renderLogin(message) {
+  setDocumentTitle();
   app.innerHTML = `
     <main class="screen narrow">
       <h1>ログイン</h1>
@@ -131,6 +142,7 @@ function renderLogin(message) {
 }
 
 async function renderProjects() {
+  setDocumentTitle();
   app.innerHTML = `
     <main class="screen narrow">
       <div class="bar" style="padding:0 0 12px; border:0">
@@ -304,6 +316,7 @@ async function renderSessions(projectId) {
     </main>
   `;
   document.querySelector("h1").textContent = project.name;
+  setDocumentTitle(project.name);
   document.querySelector("#back").addEventListener("click", () => {
     location.hash = "#/projects";
   });
@@ -412,8 +425,19 @@ function clearAttachID(projectId, chatId) {
   }
 }
 
-function renderTerminal(projectId, chatId) {
-  const project = projects.find((item) => item.id === projectId);
+async function renderTerminal(projectId, chatId) {
+  const project = await ensureProject(projectId);
+  if (!project) {
+    return;
+  }
+  // 非同期のあいだに別画面へ移った場合は、古い結果で描画しない。
+  if (!isCurrentTerminalRoute(projectId, chatId)) {
+    return;
+  }
+  const sessionTitle = await loadSessionTitle(projectId, chatId);
+  if (!me || !isCurrentTerminalRoute(projectId, chatId)) {
+    return;
+  }
   destroyTerminal();
   const route = chatId
     ? `#/projects/${encodeURIComponent(projectId)}/terminal/${encodeURIComponent(chatId)}`
@@ -466,7 +490,8 @@ function renderTerminal(projectId, chatId) {
     ></textarea>
   `;
   document.body.appendChild(selectOverlay);
-  document.querySelector("h1").textContent = project ? project.name : projectId;
+  document.querySelector("h1").textContent = project.name;
+  setDocumentTitle(sessionTitle || "無題", project.name);
   document.querySelector("#back").addEventListener("click", () => {
     location.hash = `#/projects/${encodeURIComponent(projectId)}`;
   });
@@ -506,7 +531,9 @@ function renderTerminal(projectId, chatId) {
     socket: null,
     route,
     projectId,
+    projectName: project.name,
     chatId,
+    sessionTitle: sessionTitle || "",
     attachID: loadAttachID(projectId, chatId),
     // 新しい xterm ではサーバ側 scrollback を再生する。同一画面の再接続では差分だけにする。
     replayScrollback: true,
@@ -640,6 +667,7 @@ function connectTerminal() {
         terminalSession.seenHello = true;
         terminalSession.attachID = message.attach;
         applyAgentActivity(message.activity);
+        applySessionTitle(message.title);
         // ページ再読込前に本文だけ送られ Enter が欠けた場合、PTY に未確定行が残る。
         // 毎送信の Ctrl+U は agent の確定を妨げるため、replay 直後の一度だけ消す。
         const clearStaleLine = terminalSession.replayScrollback;
@@ -653,6 +681,7 @@ function connectTerminal() {
       }
       if (message.type === "activity") {
         applyAgentActivity(message.state);
+        applySessionTitle(message.title);
         return;
       }
       if (message.type === "exit") {
@@ -766,6 +795,19 @@ function applyAgentActivity(state) {
   const waiting = normalized === "waiting";
   submit.disabled = waiting;
   submit.title = waiting ? "選択または確認の入力待ちのため送信できません" : "";
+}
+
+// status indicators のセッション名が付いたらタブタイトルへ反映する。
+function applySessionTitle(title) {
+  if (!terminalSession) {
+    return;
+  }
+  const trimmed = String(title || "").trim();
+  if (!trimmed || trimmed === terminalSession.sessionTitle) {
+    return;
+  }
+  terminalSession.sessionTitle = trimmed;
+  setDocumentTitle(trimmed, terminalSession.projectName);
 }
 
 // Esc 後は自由テキスト入力へ移ることがあり、タイトルは waiting のまま残る。
@@ -1162,6 +1204,35 @@ async function ensureProject(projectId) {
       name: projectId,
     }
   );
+}
+
+function isCurrentTerminalRoute(projectId, chatId) {
+  const route = parseRoute();
+  return (
+    route.name === "terminal" &&
+    route.projectId === projectId &&
+    (route.chatId || "") === (chatId || "")
+  );
+}
+
+// セッション一覧と同じ表示名をタブタイトルに使うため、一覧 API から拾う。
+async function loadSessionTitle(projectId, chatId) {
+  if (!chatId) {
+    return "";
+  }
+  try {
+    const body = await api(
+      `/api/projects/${encodeURIComponent(projectId)}/sessions`,
+    );
+    const session = body.sessions.find((item) => item.id === chatId);
+    return session?.title || "";
+  } catch (error) {
+    if (error.status === 401) {
+      me = null;
+      renderLogin("");
+    }
+    return "";
+  }
 }
 
 async function logout() {
