@@ -426,7 +426,7 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 	defer cancel()
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	buffered, live, ok := rt.AttachOutput(replay)
+	buffered, live, activityLive, ok := rt.AttachOutput(replay)
 	if !ok {
 		payload, _ := json.Marshal(map[string]any{"type": "exit", "code": rt.ExitCode()})
 		writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -453,9 +453,10 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 		return conn.Write(writeCtx, typ, data)
 	}
 	hello, _ := json.Marshal(map[string]any{
-		"type":   "hello",
-		"attach": rt.id,
-		"chat":   rt.chatID,
+		"type":     "hello",
+		"attach":   rt.id,
+		"chat":     rt.chatID,
+		"activity": ActivityName(rt.Activity()),
 	})
 	if err := write(websocket.MessageText, hello); err != nil {
 		return false, false
@@ -489,6 +490,19 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 			select {
 			case <-ctx.Done():
 				return
+			case state, open := <-activityLive:
+				if !open {
+					activityLive = nil
+					continue
+				}
+				payload, _ := json.Marshal(map[string]any{
+					"type":  "activity",
+					"state": ActivityName(state),
+				})
+				if writeErr := write(websocket.MessageText, payload); writeErr != nil {
+					cancel()
+					return
+				}
 			case payload, open := <-live:
 				if !open {
 					// detach/reattach でも sink は閉じる。プロセス終了時だけ exit を送る。

@@ -103,6 +103,11 @@ textarea {
   font-weight: 700;
 }
 
+.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .secondary {
   background: transparent;
   border: 1px solid var(--line);
@@ -330,8 +335,7 @@ body.is-term-selecting {
   display: grid;
   grid-template-columns: repeat(3, 52px);
   grid-template-areas:
-    "select select select"
-    ". up ."
+    "esc up select"
     "left down right"
     "enter enter enter";
   gap: 8px;
@@ -339,6 +343,10 @@ body.is-term-selecting {
   border-radius: 16px;
   background: var(--float);
   border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.floats .esc {
+  grid-area: esc;
 }
 
 .floats .select {

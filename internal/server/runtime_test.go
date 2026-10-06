@@ -170,6 +170,39 @@ func TestTerminalBusyCloseDetaches(t *testing.T) {
 	t.Fatal("busy close should keep runtime for grace period")
 }
 
+func TestTerminalWaitingCloseDetaches(t *testing.T) {
+	srv, ts := testServer(t)
+	srv.cfg.DetachGrace = time.Minute
+	defer ts.Close()
+	defer srv.Close()
+
+	cookie := loginCookie(t, ts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := dialTerminal(t, ctx, ts, cookie, "project=app")
+	hello := readJSONMessage(t, ctx, conn)
+	attach, _ := hello["attach"].(string)
+	rt, ok := srv.runtimes.Lookup(attach, "alice")
+	if !ok {
+		t.Fatal("runtime missing")
+	}
+	rt.setTitle("Waiting for you | demo")
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"close"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := srv.runtimes.Lookup(attach, "alice"); ok {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("waiting close should keep runtime for grace period")
+}
+
 func loginCookie(t *testing.T, ts *httptest.Server) *http.Cookie {
 	t.Helper()
 	res := postJSON(t, ts, "/api/login", `{"username":"alice","password":"secret"}`, "")

@@ -10,8 +10,8 @@ func TestClassifyTitle(t *testing.T) {
 		want  AgentActivity
 	}{
 		{"Working… | my-session", AgentActivityBusy},
-		{"Waiting for you | my-session", AgentActivityBusy},
-		{"Waiting for confirmation | my-session", AgentActivityBusy},
+		{"Waiting for you | my-session", AgentActivityWaiting},
+		{"Waiting for confirmation | my-session", AgentActivityWaiting},
 		{"Ready | my-session", AgentActivityIdle},
 		{"Cursor Agent", AgentActivityUnknown},
 		{"", AgentActivityUnknown},
@@ -19,6 +19,23 @@ func TestClassifyTitle(t *testing.T) {
 	for _, tc := range cases {
 		if got := ClassifyTitle(tc.title); got != tc.want {
 			t.Fatalf("ClassifyTitle(%q) = %v, want %v", tc.title, got, tc.want)
+		}
+	}
+}
+
+func TestActivityName(t *testing.T) {
+	cases := []struct {
+		activity AgentActivity
+		want     string
+	}{
+		{AgentActivityUnknown, "unknown"},
+		{AgentActivityIdle, "idle"},
+		{AgentActivityBusy, "busy"},
+		{AgentActivityWaiting, "waiting"},
+	}
+	for _, tc := range cases {
+		if got := ActivityName(tc.activity); got != tc.want {
+			t.Fatalf("ActivityName(%v) = %q, want %q", tc.activity, got, tc.want)
 		}
 	}
 }

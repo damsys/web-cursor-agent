@@ -382,8 +382,9 @@ function renderTerminal(projectId, chatId) {
       <button class="scroll-bottom is-hidden" id="scroll-bottom" type="button">末尾にスクロール</button>
       <div class="floats" id="floats">
         <button class="hide" id="hide-floats" type="button" aria-label="操作キーを隠す">×</button>
-        <button class="select" id="term-select-open" type="button">選択</button>
+        <button class="esc" type="button" data-key="esc">Esc</button>
         <button class="up" type="button" data-key="up">↑</button>
+        <button class="select" id="term-select-open" type="button">選択</button>
         <button class="left" type="button" data-key="left">←</button>
         <button class="down" type="button" data-key="down">↓</button>
         <button class="right" type="button" data-key="right">→</button>
@@ -457,6 +458,7 @@ function renderTerminal(projectId, chatId) {
     // 新しい xterm ではサーバ側 scrollback を再生する。同一画面の再接続では差分だけにする。
     replayScrollback: true,
     seenHello: false,
+    activity: "unknown",
     hidden: false,
     leaving: false,
     agentExited: false,
@@ -484,6 +486,10 @@ function renderTerminal(projectId, chatId) {
   new ResizeObserver(() => fitTerminal()).observe(termElement);
   document.querySelector("#composer").addEventListener("submit", (event) => {
     event.preventDefault();
+    // 選択・確認待ち中は Enter が意図せず確定されるのを防ぐ。
+    if (terminalSession?.activity === "waiting") {
+      return;
+    }
     const draft = document.querySelector("#draft");
     const text = draft.value;
     if (text.length === 0) {
@@ -506,6 +512,7 @@ function renderTerminal(projectId, chatId) {
       return;
     }
     const sequences = {
+      esc: "\u001b",
       up: "\u001b[A",
       down: "\u001b[B",
       right: "\u001b[C",
@@ -513,6 +520,9 @@ function renderTerminal(projectId, chatId) {
       enter: "\r",
     };
     sendInput(sequences[key]);
+    if (key === "esc") {
+      unlockSendAfterEsc();
+    }
   });
   document.querySelector("#hide-floats").addEventListener("click", () => {
     setFloatsHidden(true);
@@ -576,6 +586,7 @@ function connectTerminal() {
       if (message.type === "hello" && message.attach) {
         terminalSession.seenHello = true;
         terminalSession.attachID = message.attach;
+        applyAgentActivity(message.activity);
         // ページ再読込前に本文だけ送られ Enter が欠けた場合、PTY に未確定行が残る。
         // 毎送信の Ctrl+U は agent の確定を妨げるため、replay 直後の一度だけ消す。
         const clearStaleLine = terminalSession.replayScrollback;
@@ -585,6 +596,10 @@ function connectTerminal() {
         if (clearStaleLine) {
           sendInput("\u0015");
         }
+        return;
+      }
+      if (message.type === "activity") {
+        applyAgentActivity(message.state);
         return;
       }
       if (message.type === "exit") {
@@ -660,6 +675,7 @@ function onTerminalKeydown(event) {
     return;
   }
   const sequences = {
+    Escape: "\u001b",
     ArrowUp: "\u001b[A",
     ArrowDown: "\u001b[B",
     ArrowRight: "\u001b[C",
@@ -672,6 +688,40 @@ function onTerminalKeydown(event) {
   }
   event.preventDefault();
   sendInput(sequence);
+  if (event.key === "Escape") {
+    unlockSendAfterEsc();
+  }
+}
+
+// CLI の選択・確認待ちでは送信ボタンを止め、誤って Enter が届くのを防ぐ。
+function applyAgentActivity(state) {
+  if (!terminalSession) {
+    return;
+  }
+  const normalized =
+    state === "idle" ||
+    state === "busy" ||
+    state === "waiting" ||
+    state === "unknown"
+      ? state
+      : "unknown";
+  terminalSession.activity = normalized;
+  const submit = document.querySelector("#composer button[type='submit']");
+  if (!submit) {
+    return;
+  }
+  const waiting = normalized === "waiting";
+  submit.disabled = waiting;
+  submit.title = waiting ? "選択または確認の入力待ちのため送信できません" : "";
+}
+
+// Esc 後は自由テキスト入力へ移ることがあり、タイトルは waiting のまま残る。
+// タイトルだけでは区別できないため、Esc 押下で送信を再開する。
+function unlockSendAfterEsc() {
+  if (terminalSession?.activity !== "waiting") {
+    return;
+  }
+  applyAgentActivity("idle");
 }
 
 // 操作パネルは表示中に選択を邪魔しないよう、隠したときだけタップ検出で戻す。

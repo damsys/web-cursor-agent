@@ -31,6 +31,7 @@ type runtimeSession struct {
 	mu             sync.Mutex
 	activity       AgentActivity
 	sink           chan []byte
+	activitySink   chan AgentActivity
 	scrollback     *byteRing
 	detachedBuffer *byteRing
 	graceTimer     *time.Timer
@@ -120,6 +121,10 @@ func (rt *runtimeSession) closeSink() {
 		close(rt.sink)
 		rt.sink = nil
 	}
+	if rt.activitySink != nil {
+		close(rt.activitySink)
+		rt.activitySink = nil
+	}
 }
 
 func (rt *runtimeSession) markClosed() {
@@ -135,8 +140,26 @@ func (rt *runtimeSession) setTitle(title string) {
 		return
 	}
 	rt.mu.Lock()
+	changed := rt.activity != activity
 	rt.activity = activity
+	sink := rt.activitySink
 	rt.mu.Unlock()
+	if !changed || sink == nil {
+		return
+	}
+	// 最新の状態だけを届ける。満杯なら古い値を捨てて差し替える。
+	select {
+	case sink <- activity:
+	default:
+		select {
+		case <-sink:
+		default:
+		}
+		select {
+		case sink <- activity:
+		default:
+		}
+	}
 }
 
 func (rt *runtimeSession) Activity() AgentActivity {
@@ -162,19 +185,23 @@ func (rt *runtimeSession) deliver(payload []byte) {
 	}
 }
 
-// AttachOutput は再接続用の出力を返し、以降の出力を channel へ流す。
+// AttachOutput は再接続用の出力を返し、以降の出力と状態変化を channel へ流す。
 // replay が true のときは保持している scrollback 全体を返す (ページ再読込向け)。
 // false のときは切断中に溜まった差分だけを返す (同一画面の再接続向け)。
-func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-chan []byte, ok bool) {
+func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-chan []byte, activity <-chan AgentActivity, ok bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.closed {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 	rt.stopGraceLocked()
 	if rt.sink != nil {
 		close(rt.sink)
 		rt.sink = nil
+	}
+	if rt.activitySink != nil {
+		close(rt.activitySink)
+		rt.activitySink = nil
 	}
 	if replay {
 		buffered = rt.scrollback.Snapshot()
@@ -184,7 +211,9 @@ func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-cha
 	}
 	sink := make(chan []byte, outputSinkSize)
 	rt.sink = sink
-	return buffered, sink, true
+	activitySink := make(chan AgentActivity, 1)
+	rt.activitySink = activitySink
+	return buffered, sink, activitySink, true
 }
 
 // DetachOutput は WebSocket 切断後も agent を残し、出力をバッファへ回す。
@@ -197,6 +226,10 @@ func (rt *runtimeSession) DetachOutput() {
 	if rt.sink != nil {
 		close(rt.sink)
 		rt.sink = nil
+	}
+	if rt.activitySink != nil {
+		close(rt.activitySink)
+		rt.activitySink = nil
 	}
 	rt.startGraceLocked()
 }
@@ -242,6 +275,10 @@ func (rt *runtimeSession) Terminate() {
 	if rt.sink != nil {
 		close(rt.sink)
 		rt.sink = nil
+	}
+	if rt.activitySink != nil {
+		close(rt.activitySink)
+		rt.activitySink = nil
 	}
 	rt.mu.Unlock()
 	rt.term.Close()

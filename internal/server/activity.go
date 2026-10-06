@@ -13,8 +13,10 @@ const (
 	AgentActivityUnknown AgentActivity = iota
 	// AgentActivityIdle は次の入力待ち (Ready) である。
 	AgentActivityIdle
-	// AgentActivityBusy は処理中、またはユーザー操作待ちである。
+	// AgentActivityBusy は処理中である。
 	AgentActivityBusy
+	// AgentActivityWaiting は選択・確認などユーザー操作待ちである。
+	AgentActivityWaiting
 )
 
 // ClassifyTitle は status indicators の端末タイトルから状態を分類する。
@@ -24,11 +26,25 @@ func ClassifyTitle(title string) AgentActivity {
 	case strings.Contains(lower, "working"):
 		return AgentActivityBusy
 	case strings.Contains(lower, "waiting for"):
-		return AgentActivityBusy
+		return AgentActivityWaiting
 	case strings.Contains(lower, "ready"):
 		return AgentActivityIdle
 	default:
 		return AgentActivityUnknown
+	}
+}
+
+// ActivityName は WebSocket 通知用の状態名を返す。
+func ActivityName(activity AgentActivity) string {
+	switch activity {
+	case AgentActivityIdle:
+		return "idle"
+	case AgentActivityBusy:
+		return "busy"
+	case AgentActivityWaiting:
+		return "waiting"
+	default:
+		return "unknown"
 	}
 }
 
