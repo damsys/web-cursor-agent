@@ -452,6 +452,7 @@ async function renderTerminal(projectId, chatId) {
       <div class="term-wrap" id="term-wrap">
         <div id="term"></div>
       </div>
+      <div class="term-toast is-hidden" id="term-toast" role="status" aria-live="polite"></div>
       <form class="composer" id="composer">
         <textarea id="draft" placeholder="メッセージ"></textarea>
         <button class="primary" type="submit">送信</button>
@@ -546,6 +547,14 @@ async function renderTerminal(projectId, chatId) {
     showSelectOverlay: null,
     hideSelectOverlay: null,
     reconnectTimer: null,
+    // 本文送信後〜Enter+行クリア完了前。切断すると PTY に未確定行が残り次送信へ付く。
+    pendingSubmit: false,
+    pendingText: "",
+    submitTimer: null,
+    // Enter 後も CLI 入力行に本文が残ることがある。残っているあいだ true。
+    ptyLineDirty: false,
+    // 行クリアの Ctrl+U が誘発する waiting を短時間無視する。
+    suppressWaitingUntil: 0,
     unbindTouchGestures: null,
     unbindSelectOverlay: null,
     unbindFloatReveal: null,
@@ -564,20 +573,7 @@ async function renderTerminal(projectId, chatId) {
   fitTerminal();
   syncScrollBottom();
   new ResizeObserver(() => fitTerminal()).observe(termElement);
-  document.querySelector("#composer").addEventListener("submit", (event) => {
-    event.preventDefault();
-    // 選択・確認待ち中は Enter が意図せず確定されるのを防ぐ。
-    if (terminalSession?.activity === "waiting") {
-      return;
-    }
-    const draft = document.querySelector("#draft");
-    const text = draft.value;
-    if (text.length === 0) {
-      return;
-    }
-    draft.value = "";
-    sendDraft(text);
-  });
+  bindDraftComposer(document.querySelector("#composer"));
   floats.addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) {
@@ -648,7 +644,7 @@ function connectTerminal() {
   }
   // フルリロードでは close ハンドラが走らないため、attach がある初回接続で再接続中と出す。
   if (terminalSession.replayScrollback && terminalSession.attachID) {
-    term.writeln("再接続しています…");
+    showTermToast("再接続しています…");
   }
   const socket = new WebSocket(
     `${protocol}//${location.host}/ws/terminal?${params.toString()}`,
@@ -666,16 +662,29 @@ function connectTerminal() {
       if (message.type === "hello" && message.attach) {
         terminalSession.seenHello = true;
         terminalSession.attachID = message.attach;
+        hideTermToast();
         applyAgentActivity(message.activity);
         applySessionTitle(message.title);
-        // ページ再読込前に本文だけ送られ Enter が欠けた場合、PTY に未確定行が残る。
-        // 毎送信の Ctrl+U は agent の確定を妨げるため、replay 直後の一度だけ消す。
-        const clearStaleLine = terminalSession.replayScrollback;
+        // ページ再読込前や Enter 欠落時は PTY に未確定行が残る。
+        // 毎送信の Ctrl+U は agent の確定を妨げるため、必要なときだけ消す。
+        const clearStaleLine =
+          terminalSession.replayScrollback || terminalSession.pendingSubmit;
+        const retryText = terminalSession.pendingSubmit
+          ? terminalSession.pendingText
+          : "";
+        clearSubmitTimer();
+        markSubmitCommitted();
         // hello 以降は同一画面の再接続になるので、差分バッファだけを要求する。
         terminalSession.replayScrollback = false;
         saveAttachID(projectId, chatId, message.attach);
         if (clearStaleLine) {
-          sendInput("\u0015");
+          clearPtyLine();
+        }
+        // 切断で Enter が落ちた本文は、行クリア後に送り直す。
+        if (retryText) {
+          window.setTimeout(() => {
+            sendDraft(retryText);
+          }, 0);
         }
         return;
       }
@@ -687,7 +696,8 @@ function connectTerminal() {
       if (message.type === "exit") {
         terminalSession.agentExited = true;
         clearAttachID(projectId, chatId);
-        term.writeln(`\r\nセッションが終了しました (code ${message.code})`);
+        // 端末ログ末尾に混ざると会話と区別しづらいので、トーストで出す。
+        showTermToast(`セッションが終了しました (code ${message.code})`);
       }
       return;
     }
@@ -706,9 +716,28 @@ function connectTerminal() {
       clearAttachID(projectId, chatId);
       terminalSession.attachID = "";
     }
-    term.writeln("\r\n接続が切れました。再接続しています…");
+    showTermToast("接続が切れました。再接続しています…");
     scheduleTerminalReconnect(1000);
   });
+}
+
+// 再接続・終了通知は端末ログと紛らわしいので、独立したトーストで知らせる。
+function showTermToast(message) {
+  const toast = document.querySelector("#term-toast");
+  if (!toast) {
+    return;
+  }
+  toast.textContent = message;
+  toast.classList.remove("is-hidden");
+}
+
+function hideTermToast() {
+  const toast = document.querySelector("#term-toast");
+  if (!toast) {
+    return;
+  }
+  toast.textContent = "";
+  toast.classList.add("is-hidden");
 }
 
 function scheduleTerminalReconnect(delayMs) {
@@ -787,14 +816,59 @@ function applyAgentActivity(state) {
     state === "unknown"
       ? state
       : "unknown";
+  // 自前の行クリア直後の waiting は、送信不能にしない。
+  if (
+    normalized === "waiting" &&
+    Date.now() < terminalSession.suppressWaitingUntil
+  ) {
+    return;
+  }
   terminalSession.activity = normalized;
+  syncComposerSubmitState(normalized === "waiting");
+}
+
+function syncComposerSubmitState(waiting) {
   const submit = document.querySelector("#composer button[type='submit']");
   if (!submit) {
     return;
   }
-  const waiting = normalized === "waiting";
   submit.disabled = waiting;
   submit.title = waiting ? "選択または確認の入力待ちのため送信できません" : "";
+}
+
+function isSendBlockedByWaiting() {
+  if (!terminalSession || terminalSession.activity !== "waiting") {
+    return false;
+  }
+  return Date.now() >= terminalSession.suppressWaitingUntil;
+}
+
+const PTY_CLEAR_WAITING_SUPPRESS_MS = 1500;
+const DRAFT_ENTER_DELAY_BASE_MS = 80;
+const DRAFT_ENTER_DELAY_MAX_MS = 500;
+const DRAFT_CLEAR_DELAY_BASE_MS = 120;
+const DRAFT_CLEAR_DELAY_MAX_MS = 600;
+const DRAFT_CLEAR_RETRY_MIN_MS = 80;
+
+// PTY 入力行を消し、Enter 後に残った前回本文も取り除く。
+function clearPtyLine(markClean = true) {
+  if (!terminalSession) {
+    return false;
+  }
+  terminalSession.suppressWaitingUntil =
+    Date.now() + PTY_CLEAR_WAITING_SUPPRESS_MS;
+  // 行クリア起因の waiting で送信ボタンが止まっていたら戻す。
+  if (terminalSession.activity === "waiting") {
+    terminalSession.activity = "idle";
+    syncComposerSubmitState(false);
+  }
+  if (!sendInput("\u0015")) {
+    return false;
+  }
+  if (markClean) {
+    terminalSession.ptyLineDirty = false;
+  }
+  return true;
 }
 
 // status indicators のセッション名が付いたらタブタイトルへ反映する。
@@ -1122,13 +1196,127 @@ function fitTerminal() {
   }
 }
 
+function bindDraftComposer(form) {
+  const draft = form.querySelector("#draft");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    // 選択・確認待ち中は Enter が意図せず確定されるのを防ぐ。
+    if (isSendBlockedByWaiting()) {
+      return;
+    }
+    const text = draft.value;
+    if (text.length === 0) {
+      return;
+    }
+    draft.value = "";
+    // 未接続だと本文が捨てられるので、失敗時は下書きへ戻す。
+    if (!sendDraft(text)) {
+      draft.value = text;
+    }
+  });
+}
+
+function markSubmitCommitted() {
+  if (!terminalSession) {
+    return;
+  }
+  terminalSession.pendingSubmit = false;
+  terminalSession.pendingText = "";
+}
+
+// 長い本文ほど PTY / CLI の反映が遅れるので、待ちを伸ばす。
+function draftEnterDelayMs(text) {
+  return Math.min(
+    DRAFT_ENTER_DELAY_MAX_MS,
+    DRAFT_ENTER_DELAY_BASE_MS + Math.ceil(String(text).length / 2),
+  );
+}
+
+function draftClearDelayMs(text) {
+  return Math.min(
+    DRAFT_CLEAR_DELAY_MAX_MS,
+    DRAFT_CLEAR_DELAY_BASE_MS + Math.ceil(String(text).length / 2),
+  );
+}
+
+function draftClearRetryDelayMs(clearDelay) {
+  return Math.max(DRAFT_CLEAR_RETRY_MIN_MS, Math.floor(clearDelay / 2));
+}
+
+// 送信の本体: 本文 → Enter → Ctrl+U で PTY に残った入力行を消す。
+// 次送信の前だけ消すと、二通目の本文ごと消えて送れなくなることがある。
+function finishDraftSubmit() {
+  if (!terminalSession) {
+    return;
+  }
+  const pendingText = terminalSession.pendingText || "";
+  if (!sendInput("\r")) {
+    // Enter だけ落ちた場合は pending を残し、再接続時にクリアして再送する。
+    return;
+  }
+  // Enter 処理後に残行を消す。短いと確定前に消える／残ることがある。
+  const clearDelay = draftClearDelayMs(pendingText);
+  terminalSession.submitTimer = window.setTimeout(() => {
+    if (!terminalSession) {
+      return;
+    }
+    clearPtyLine(false);
+    // CLI が行を描き直すことがあるので、もう一度消す。
+    terminalSession.submitTimer = window.setTimeout(() => {
+      if (!terminalSession) {
+        return;
+      }
+      clearPtyLine(true);
+      markSubmitCommitted();
+      terminalSession.submitTimer = null;
+    }, draftClearRetryDelayMs(clearDelay));
+  }, clearDelay);
+}
+
 // sendDraft は本文を一度に送り、その後に Enter でエージェントの入力を確定する。
 // 同じ入力に含めた復帰は本文の改行になるため、Enter は別のキーとして届ける。
+// 成功時 true。未接続や直前の未確定行掃除に失敗したときは false。
 function sendDraft(text) {
-  sendInput(text);
-  window.setTimeout(() => {
-    sendInput("\r");
-  }, 80);
+  if (!terminalSession) {
+    return false;
+  }
+  // 直前の本文が Enter 待ちなら、先に確定して残行を消してから次を送る。
+  if (terminalSession.pendingSubmit) {
+    clearSubmitTimer();
+    if (!sendInput("\r")) {
+      return false;
+    }
+    if (!clearPtyLine()) {
+      return false;
+    }
+    markSubmitCommitted();
+  } else if (terminalSession.ptyLineDirty) {
+    // Enter 後クリアが残ったままのときだけ、送信前に消してから本文を送る。
+    if (!clearPtyLine()) {
+      return false;
+    }
+  }
+  if (!sendInput(text)) {
+    return false;
+  }
+  terminalSession.ptyLineDirty = true;
+  terminalSession.pendingSubmit = true;
+  terminalSession.pendingText = text;
+  terminalSession.submitTimer = window.setTimeout(() => {
+    if (!terminalSession || !terminalSession.pendingSubmit) {
+      return;
+    }
+    finishDraftSubmit();
+  }, draftEnterDelayMs(text));
+  return true;
+}
+
+function clearSubmitTimer() {
+  if (!terminalSession?.submitTimer) {
+    return;
+  }
+  window.clearTimeout(terminalSession.submitTimer);
+  terminalSession.submitTimer = null;
 }
 
 function sendInput(data) {
@@ -1136,9 +1324,10 @@ function sendInput(data) {
     !terminalSession ||
     terminalSession.socket?.readyState !== WebSocket.OPEN
   ) {
-    return;
+    return false;
   }
   terminalSession.socket.send(JSON.stringify({ type: "input", data }));
+  return true;
 }
 
 function destroyTerminal() {
@@ -1147,6 +1336,7 @@ function destroyTerminal() {
     return;
   }
   terminalSession.leaving = true;
+  clearSubmitTimer();
   if (terminalSession.reconnectTimer) {
     window.clearTimeout(terminalSession.reconnectTimer);
   }

@@ -432,3 +432,26 @@ body.is-term-selecting {
 .scroll-bottom.is-hidden {
   display: none;
 }
+
+.term-toast {
+  position: fixed;
+  top: calc(52px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: min(28rem, calc(100vw - 24px));
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(23, 28, 36, 0.92);
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.term-toast.is-hidden {
+  display: none;
+}
