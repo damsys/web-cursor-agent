@@ -3,6 +3,8 @@
     "allow": [
       "Shell(echo:*)",
       "Shell(ls:*)",
+      "Shell(pwd)",
+      "Shell(pwd:*)",
       "Shell(head:*)",
       "Shell(tail:*)",
       "Shell(grep:*)",
