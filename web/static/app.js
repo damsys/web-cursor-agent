@@ -4,6 +4,10 @@ const defaultDocumentTitle = "Cursor";
 let me = null;
 let projects = [];
 let terminalSession = null;
+// hello が早く来ても再接続トーストが一瞬で消えないようにする。
+const TERM_TOAST_MIN_VISIBLE_MS = 1000;
+let termToastShownAt = 0;
+let termToastHideTimer = null;
 
 // ブラウザタブに現在の画面文脈が分かるよう、document.title を組み立てる。
 function setDocumentTitle(...parts) {
@@ -630,6 +634,16 @@ function connectTerminal() {
   ) {
     return;
   }
+  // CLOSING/CLOSED のまま残っていると close が差し替え後に握りつぶされるので先に捨てる。
+  const staleSocket = terminalSession.socket;
+  if (staleSocket) {
+    terminalSession.socket = null;
+    try {
+      staleSocket.close();
+    } catch (_error) {
+      // ignore
+    }
+  }
   const { projectId, chatId, term } = terminalSession;
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ project: projectId });
@@ -645,6 +659,9 @@ function connectTerminal() {
   // フルリロードでは close ハンドラが走らないため、attach がある初回接続で再接続中と出す。
   if (terminalSession.replayScrollback && terminalSession.attachID) {
     showTermToast("再接続しています…");
+  } else if (!terminalSession.replayScrollback) {
+    // 同一画面の再接続。close を取りこぼしてもここで出す。
+    showTermToast("接続が切れました。再接続しています…");
   }
   const socket = new WebSocket(
     `${protocol}//${location.host}/ws/terminal?${params.toString()}`,
@@ -727,11 +744,37 @@ function showTermToast(message) {
   if (!toast) {
     return;
   }
+  if (termToastHideTimer) {
+    window.clearTimeout(termToastHideTimer);
+    termToastHideTimer = null;
+  }
   toast.textContent = message;
   toast.classList.remove("is-hidden");
+  termToastShownAt = Date.now();
 }
 
 function hideTermToast() {
+  const toast = document.querySelector("#term-toast");
+  if (!toast || toast.classList.contains("is-hidden")) {
+    return;
+  }
+  if (termToastHideTimer) {
+    window.clearTimeout(termToastHideTimer);
+    termToastHideTimer = null;
+  }
+  // 再接続が速いときも、最低表示時間だけ残して視認できるようにする。
+  const remain = TERM_TOAST_MIN_VISIBLE_MS - (Date.now() - termToastShownAt);
+  if (remain > 0) {
+    termToastHideTimer = window.setTimeout(() => {
+      termToastHideTimer = null;
+      hideTermToastNow();
+    }, remain);
+    return;
+  }
+  hideTermToastNow();
+}
+
+function hideTermToastNow() {
   const toast = document.querySelector("#term-toast");
   if (!toast) {
     return;
@@ -771,12 +814,24 @@ function reconnectTerminal() {
   ) {
     return;
   }
+  const socket = terminalSession.socket;
   if (
-    terminalSession.socket &&
-    terminalSession.socket.readyState === WebSocket.OPEN
+    socket &&
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
   ) {
     return;
   }
+  // close 前に差し替えるとトーストが出ないので、先に通知して古い参照を捨てる。
+  if (socket) {
+    terminalSession.socket = null;
+    try {
+      socket.close();
+    } catch (_error) {
+      // ignore
+    }
+  }
+  showTermToast("接続が切れました。再接続しています…");
   scheduleTerminalReconnect(0);
 }
 
@@ -1337,6 +1392,10 @@ function destroyTerminal() {
   }
   terminalSession.leaving = true;
   clearSubmitTimer();
+  if (termToastHideTimer) {
+    window.clearTimeout(termToastHideTimer);
+    termToastHideTimer = null;
+  }
   if (terminalSession.reconnectTimer) {
     window.clearTimeout(terminalSession.reconnectTimer);
   }
