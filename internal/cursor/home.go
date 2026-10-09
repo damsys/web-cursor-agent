@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"web-cursor-agent/internal/users"
 )
+
+// chatIDPattern は agent が使うチャットディレクトリ名 (UUID) に合わせる。
+var chatIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // Layout は 1 人のアプリユーザーに割り当てる Cursor のディレクトリである。
 type Layout struct {
@@ -152,6 +156,67 @@ func hiddenMarkerPath(dataDir, projectPath, chatID string) string {
 // ListChats はプロジェクトの絶対パスに対応するチャット履歴を新しい順に返す。
 // 会話のない空セッション、サブエージェント、非表示マーカー付きは一覧から外す。
 func ListChats(dataDir, projectPath string) ([]Chat, error) {
+	all, err := scanChats(dataDir, projectPath)
+	if err != nil {
+		return nil, err
+	}
+	chats := make([]Chat, 0, len(all))
+	for _, chat := range all {
+		if !chat.HasConversation {
+			continue
+		}
+		if _, err := os.Stat(hiddenMarkerPath(dataDir, projectPath, chat.ID)); err == nil {
+			continue
+		}
+		chats = append(chats, chat)
+	}
+	sort.Slice(chats, func(i, j int) bool {
+		if chats[i].UpdatedAtMs == chats[j].UpdatedAtMs {
+			return chats[i].ID > chats[j].ID
+		}
+		return chats[i].UpdatedAtMs > chats[j].UpdatedAtMs
+	})
+	return chats, nil
+}
+
+// ChatIDSet は新規セッション検出用に、既存チャット ID の集合を返す。
+// 空セッションも含め、サブエージェントは除く。
+func ChatIDSet(dataDir, projectPath string) (map[string]struct{}, error) {
+	all, err := scanChats(dataDir, projectPath)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]struct{}, len(all))
+	for _, chat := range all {
+		out[chat.ID] = struct{}{}
+	}
+	return out, nil
+}
+
+// FindNewChat は known に無いチャットのうち、作成時刻が最も新しいものを返す。
+// 新規 agent 起動後に履歴ディレクトリへ現れた ID を特定するために使う。
+func FindNewChat(dataDir, projectPath string, known map[string]struct{}) (Chat, bool, error) {
+	all, err := scanChats(dataDir, projectPath)
+	if err != nil {
+		return Chat{}, false, err
+	}
+	var best Chat
+	found := false
+	for _, chat := range all {
+		if _, ok := known[chat.ID]; ok {
+			continue
+		}
+		if !found || chat.CreatedAtMs > best.CreatedAtMs ||
+			(chat.CreatedAtMs == best.CreatedAtMs && chat.ID > best.ID) {
+			best = chat
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
+// scanChats はサブエージェント以外のチャットを返す（空・非表示も含む）。
+func scanChats(dataDir, projectPath string) ([]Chat, error) {
 	dir := filepath.Join(dataDir, "chats", WorkspaceHash(projectPath))
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -166,14 +231,14 @@ func ListChats(dataDir, projectPath string) ([]Chat, error) {
 			continue
 		}
 		id := entry.Name()
+		if !chatIDPattern.MatchString(id) {
+			continue
+		}
 		meta, ok := readChatMeta(filepath.Join(dir, id, "meta.json"), projectPath)
 		if !ok {
 			continue
 		}
-		if !meta.HasConversation || meta.IsSubagent {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(dir, id, hiddenMarkerName)); err == nil {
+		if meta.IsSubagent {
 			continue
 		}
 		updated := meta.UpdatedAtMs
@@ -188,12 +253,6 @@ func ListChats(dataDir, projectPath string) ([]Chat, error) {
 			HasConversation: meta.HasConversation,
 		})
 	}
-	sort.Slice(chats, func(i, j int) bool {
-		if chats[i].UpdatedAtMs == chats[j].UpdatedAtMs {
-			return chats[i].ID > chats[j].ID
-		}
-		return chats[i].UpdatedAtMs > chats[j].UpdatedAtMs
-	})
 	return chats, nil
 }
 

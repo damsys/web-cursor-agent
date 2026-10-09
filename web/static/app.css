@@ -91,16 +91,36 @@ textarea {
   border-radius: 12px;
 }
 
+a.primary,
+a.secondary,
+a.card {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+}
+
 .primary,
 .secondary {
   min-height: 44px;
   padding: 0.6rem 1rem;
 }
 
+a.primary,
+a.secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
 .primary {
   background: var(--accent);
   color: #0e1116;
   font-weight: 700;
+}
+
+a.primary {
+  color: #0e1116;
 }
 
 .primary:disabled {

@@ -176,16 +176,13 @@ async function renderProjects() {
       return;
     }
     for (const project of projects) {
-      const button = document.createElement("button");
-      button.className = "card";
-      button.type = "button";
-      button.innerHTML = `<strong></strong><span></span>`;
-      button.querySelector("strong").textContent = project.name;
-      button.querySelector("span").textContent = project.path;
-      button.addEventListener("click", () => {
-        location.hash = `#/projects/${encodeURIComponent(project.id)}`;
-      });
-      list.append(button);
+      const link = document.createElement("a");
+      link.className = "card";
+      link.href = `#/projects/${encodeURIComponent(project.id)}`;
+      link.innerHTML = `<strong></strong><span></span>`;
+      link.querySelector("strong").textContent = project.name;
+      link.querySelector("span").textContent = project.path;
+      list.append(link);
     }
   } catch (error) {
     if (error.status === 401) {
@@ -314,7 +311,7 @@ async function renderSessions(projectId) {
         <a class="top-link" href="#/projects">トップ</a>
       </div>
       <div class="stack">
-        <button class="primary" id="new-session" type="button">新しいセッション</button>
+        <a class="primary" id="new-session" href="#/projects/${encodeURIComponent(projectId)}/terminal">新しいセッション</a>
         <div id="session-list" class="stack"></div>
       </div>
     </main>
@@ -324,8 +321,19 @@ async function renderSessions(projectId) {
   document.querySelector("#back").addEventListener("click", () => {
     location.hash = "#/projects";
   });
-  document.querySelector("#new-session").addEventListener("click", () => {
-    location.hash = `#/projects/${encodeURIComponent(projectId)}/terminal`;
+  // 同一タブで新規を開くときは前回の未確定 attach を捨て、意図せず再接続しないようにする。
+  document.querySelector("#new-session").addEventListener("click", (event) => {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    clearAttachID(projectId, "");
   });
   const list = document.querySelector("#session-list");
   try {
@@ -340,24 +348,20 @@ async function renderSessions(projectId) {
       const row = document.createElement("div");
       row.className = "session-row";
 
-      const button = document.createElement("button");
-      button.className = "card session-open";
-      button.type = "button";
-      button.innerHTML = `<strong></strong><span></span>`;
-      button.querySelector("strong").textContent = session.title || "無題";
-      button.querySelector("span").textContent = new Date(
+      const link = document.createElement("a");
+      link.className = "card session-open";
+      link.href = `#/projects/${encodeURIComponent(projectId)}/terminal/${encodeURIComponent(session.id)}`;
+      link.innerHTML = `<strong></strong><span></span>`;
+      link.querySelector("strong").textContent = session.title || "無題";
+      link.querySelector("span").textContent = new Date(
         session.updated_at_ms,
       ).toLocaleString("ja-JP");
-      button.addEventListener("click", () => {
-        location.hash = `#/projects/${encodeURIComponent(projectId)}/terminal/${encodeURIComponent(session.id)}`;
-      });
 
       const hide = document.createElement("button");
       hide.className = "secondary session-hide";
       hide.type = "button";
       hide.textContent = "非表示";
-      hide.addEventListener("click", async (event) => {
-        event.stopPropagation();
+      hide.addEventListener("click", async () => {
         const confirmed = window.confirm(
           "このセッションを一覧から外しますか？履歴は残ります。",
         );
@@ -385,7 +389,7 @@ async function renderSessions(projectId) {
         }
       });
 
-      row.append(button, hide);
+      row.append(link, hide);
       list.append(row);
     }
   } catch (error) {
@@ -426,6 +430,26 @@ function clearAttachID(projectId, chatId) {
     sessionStorage.removeItem(attachStorageKey(projectId, chatId));
   } catch (_error) {
     // ignore
+  }
+}
+
+// 新規セッションでチャット ID が判明したら、リロードで別セッションにならないよう URL を差し替える。
+function bindTerminalChat(chatId) {
+  if (!terminalSession || !chatId || terminalSession.chatId === chatId) {
+    return;
+  }
+  const projectId = terminalSession.projectId;
+  const prevChatId = terminalSession.chatId;
+  const attachID = terminalSession.attachID;
+  if (attachID) {
+    clearAttachID(projectId, prevChatId);
+    saveAttachID(projectId, chatId, attachID);
+  }
+  terminalSession.chatId = chatId;
+  const next = `#/projects/${encodeURIComponent(projectId)}/terminal/${encodeURIComponent(chatId)}`;
+  if (location.hash !== next) {
+    // hashchange を起こさず、表示中の端末を作り直さない。
+    history.replaceState(null, "", next);
   }
 }
 
@@ -644,11 +668,11 @@ function connectTerminal() {
       // ignore
     }
   }
-  const { projectId, chatId, term } = terminalSession;
+  const { projectId, term } = terminalSession;
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams({ project: projectId });
-  if (chatId) {
-    params.set("chat", chatId);
+  if (terminalSession.chatId) {
+    params.set("chat", terminalSession.chatId);
   }
   if (terminalSession.attachID) {
     params.set("attach", terminalSession.attachID);
@@ -682,6 +706,7 @@ function connectTerminal() {
         hideTermToast();
         applyAgentActivity(message.activity);
         applySessionTitle(message.title);
+        bindTerminalChat(message.chat || "");
         // ページ再読込前や Enter 欠落時は PTY に未確定行が残る。
         // 毎送信の Ctrl+U は agent の確定を妨げるため、必要なときだけ消す。
         const clearStaleLine =
@@ -693,7 +718,7 @@ function connectTerminal() {
         markSubmitCommitted();
         // hello 以降は同一画面の再接続になるので、差分バッファだけを要求する。
         terminalSession.replayScrollback = false;
-        saveAttachID(projectId, chatId, message.attach);
+        saveAttachID(projectId, terminalSession.chatId, message.attach);
         if (clearStaleLine) {
           clearPtyLine();
         }
@@ -708,11 +733,12 @@ function connectTerminal() {
       if (message.type === "activity") {
         applyAgentActivity(message.state);
         applySessionTitle(message.title);
+        bindTerminalChat(message.chat || "");
         return;
       }
       if (message.type === "exit") {
         terminalSession.agentExited = true;
-        clearAttachID(projectId, chatId);
+        clearAttachID(projectId, terminalSession.chatId);
         // 端末ログ末尾に混ざると会話と区別しづらいので、トーストで出す。
         showTermToast(`セッションが終了しました (code ${message.code})`);
       }
@@ -730,7 +756,7 @@ function connectTerminal() {
     }
     // 期限切れの attach では upgrade 前に失敗するため、捨てて新規/chat 再接続に切り替える。
     if (!terminalSession.seenHello && terminalSession.attachID) {
-      clearAttachID(projectId, chatId);
+      clearAttachID(projectId, terminalSession.chatId);
       terminalSession.attachID = "";
     }
     showTermToast("接続が切れました。再接続しています…");

@@ -392,6 +392,13 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 			rt = existing
 		}
 	}
+	// 新規起動前に既存 ID を覚え、起動後に現れたチャットを URL 用に紐づける。
+	var knownChats map[string]struct{}
+	if rt == nil && chatID == "" {
+		if layout, err := s.userLayout(user.Username); err == nil {
+			knownChats, _ = cursor.ChatIDSet(layout.DataDir, project.Path)
+		}
+	}
 	started := false
 	if rt == nil {
 		if !s.runtimes.Reserve(user.Username) {
@@ -428,6 +435,9 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		s.runtimes.Track(rt)
 		started = true
 		log.Printf("agent started user=%s project=%s chat=%s runtime=%s", user.Username, project.ID, chatID, rt.id)
+		if chatID == "" {
+			s.watchNewChat(rt, user.Username, project, knownChats)
+		}
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -489,7 +499,7 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 	helloBody := map[string]any{
 		"type":     "hello",
 		"attach":   rt.id,
-		"chat":     rt.chatID,
+		"chat":     rt.ChatID(),
 		"activity": ActivityName(rt.Activity()),
 	}
 	if title := rt.SessionTitle(); title != "" {
@@ -539,6 +549,11 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 				}
 				if state.Title != "" {
 					payloadBody["title"] = state.Title
+				}
+				if chat := state.ChatID; chat != "" {
+					payloadBody["chat"] = chat
+				} else if chat := rt.ChatID(); chat != "" {
+					payloadBody["chat"] = chat
 				}
 				payload, _ := json.Marshal(payloadBody)
 				if writeErr := write(websocket.MessageText, payload); writeErr != nil {
@@ -662,6 +677,38 @@ func (s *Server) userLayout(username string) (cursor.Layout, error) {
 		return cursor.Layout{}, err
 	}
 	return layout, nil
+}
+
+// watchNewChat は agent が作ったチャット履歴 ID を検出し、runtime とクライアントへ渡す。
+func (s *Server) watchNewChat(rt *runtimeSession, username string, project config.Project, known map[string]struct{}) {
+	if known == nil {
+		known = map[string]struct{}{}
+	}
+	go func() {
+		layout, err := s.userLayout(username)
+		if err != nil {
+			return
+		}
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rt.Done():
+				return
+			case <-ticker.C:
+				chat, found, err := cursor.FindNewChat(layout.DataDir, project.Path, known)
+				if err != nil || !found {
+					continue
+				}
+				if s.runtimes.BindChat(rt, chat.ID) {
+					log.Printf("chat bound user=%s project=%s chat=%s runtime=%s", username, project.ID, chat.ID, rt.id)
+					return
+				}
+				// 他 runtime が先に取った ID は known に足して次を探す。
+				known[chat.ID] = struct{}{}
+			}
+		}
+	}()
 }
 
 func launchAgent(username string, project config.Project, chatID string, cols, rows int) (*terminal.Session, error) {

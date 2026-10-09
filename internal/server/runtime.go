@@ -41,9 +41,11 @@ type runtimeSession struct {
 }
 
 // agentStatus は CLI 端末タイトルから得た対話状態とセッション概要である。
+// ChatID は新規セッションで履歴 ID が判明したときにだけ埋める。
 type agentStatus struct {
 	Activity AgentActivity
 	Title    string
+	ChatID   string
 }
 
 type byteRing struct {
@@ -154,25 +156,13 @@ func (rt *runtimeSession) setTitle(title string) {
 	if summary != "" {
 		rt.sessionTitle = summary
 	}
-	event := agentStatus{Activity: rt.activity, Title: rt.sessionTitle}
-	sink := rt.statusSink
-	rt.mu.Unlock()
-	if (!activityChanged && !titleChanged) || sink == nil {
+	event := agentStatus{Activity: rt.activity, Title: rt.sessionTitle, ChatID: rt.chatID}
+	if !activityChanged && !titleChanged {
+		rt.mu.Unlock()
 		return
 	}
-	// 最新の状態だけを届ける。満杯なら古い値を捨てて差し替える。
-	select {
-	case sink <- event:
-	default:
-		select {
-		case <-sink:
-		default:
-		}
-		select {
-		case sink <- event:
-		default:
-		}
-	}
+	rt.notifyStatusLocked(event)
+	rt.mu.Unlock()
 }
 
 func (rt *runtimeSession) Activity() AgentActivity {
@@ -185,6 +175,33 @@ func (rt *runtimeSession) SessionTitle() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.sessionTitle
+}
+
+// ChatID は紐づく Cursor チャット履歴の ID を返す。未検出なら空文字。
+func (rt *runtimeSession) ChatID() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.chatID
+}
+
+// notifyStatusLocked は接続中クライアントへ状態を届ける。rt.mu 保持中に呼ぶ。
+func (rt *runtimeSession) notifyStatusLocked(event agentStatus) {
+	sink := rt.statusSink
+	if sink == nil {
+		return
+	}
+	select {
+	case sink <- event:
+	default:
+		select {
+		case <-sink:
+		default:
+		}
+		select {
+		case sink <- event:
+		default:
+		}
+	}
 }
 
 func (rt *runtimeSession) deliver(payload []byte) {
@@ -395,16 +412,49 @@ func (h *runtimeHub) FindByChat(username, projectID, chatID string) (*runtimeSes
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for rt := range h.sessions {
-		if rt.username == username && rt.projectID == projectID && rt.chatID == chatID {
-			rt.mu.Lock()
-			closed := rt.closed
-			rt.mu.Unlock()
-			if !closed {
-				return rt, true
-			}
+		rt.mu.Lock()
+		match := rt.username == username && rt.projectID == projectID && rt.chatID == chatID && !rt.closed
+		rt.mu.Unlock()
+		if match {
+			return rt, true
 		}
 	}
 	return nil, false
+}
+
+// BindChat は新規セッションに履歴 ID を一度だけ紐づける。他 runtime が既に使っていれば拒否する。
+func (h *runtimeHub) BindChat(rt *runtimeSession, chatID string) bool {
+	if chatID == "" || rt == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for other := range h.sessions {
+		if other == rt {
+			continue
+		}
+		other.mu.Lock()
+		taken := other.chatID == chatID && !other.closed
+		other.mu.Unlock()
+		if taken {
+			return false
+		}
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.closed {
+		return false
+	}
+	if rt.chatID != "" {
+		return rt.chatID == chatID
+	}
+	rt.chatID = chatID
+	rt.notifyStatusLocked(agentStatus{
+		Activity: rt.activity,
+		Title:    rt.sessionTitle,
+		ChatID:   chatID,
+	})
+	return true
 }
 
 func (h *runtimeHub) remove(rt *runtimeSession) {

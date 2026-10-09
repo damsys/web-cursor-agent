@@ -106,6 +106,24 @@ func TestWorkspaceHashAndChats(t *testing.T) {
 	if len(chats) != 2 {
 		t.Fatalf("after unhide chats = %#v", chats)
 	}
+
+	known, err := ChatIDSet(data, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 空セッションも検出対象。サブエージェントは除く。
+	if len(known) != 3 {
+		t.Fatalf("known = %#v", known)
+	}
+	if _, ok := known[subID]; ok {
+		t.Fatal("subagent should be excluded from known set")
+	}
+	newID := "55555555-5555-5555-5555-555555555555"
+	writeMeta(newID, `{"createdAtMs":99,"updatedAtMs":99,"hasConversation":false,"cwd":"/work/app"}`)
+	found, ok, err := FindNewChat(data, project, known)
+	if err != nil || !ok || found.ID != newID {
+		t.Fatalf("FindNewChat = %#v ok=%v err=%v", found, ok, err)
+	}
 }
 
 func TestLayoutRejectsInvalidUsername(t *testing.T) {

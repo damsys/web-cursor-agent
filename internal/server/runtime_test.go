@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+
+	"web-cursor-agent/internal/cursor"
 )
 
 func TestTerminalDetachAndReattach(t *testing.T) {
@@ -201,6 +206,54 @@ func TestTerminalWaitingCloseDetaches(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("waiting close should keep runtime for grace period")
+}
+
+func TestTerminalBindsNewChatID(t *testing.T) {
+	srv, ts := testServer(t)
+	defer ts.Close()
+	defer srv.Close()
+
+	cookie := loginCookie(t, ts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn := dialTerminal(t, ctx, ts, cookie, "project=app")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	hello := readJSONMessage(t, ctx, conn)
+	if chat, _ := hello["chat"].(string); chat != "" {
+		t.Fatalf("hello chat should be empty: %#v", hello)
+	}
+	attach, _ := hello["attach"].(string)
+
+	project := srv.cfg.Projects[0]
+	layout, err := cursor.LayoutFor(srv.cfg.StateDir, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	dir := filepath.Join(layout.DataDir, "chats", cursor.WorkspaceHash(project.Path), chatID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf(
+		`{"createdAtMs":1,"updatedAtMs":1,"hasConversation":false,"cwd":%q}`,
+		project.Path,
+	)
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	msg := waitJSONMessage(t, ctx, conn, "activity")
+	if msg["chat"] != chatID {
+		t.Fatalf("activity = %#v", msg)
+	}
+	rt, ok := srv.runtimes.Lookup(attach, "alice")
+	if !ok {
+		t.Fatal("runtime missing")
+	}
+	if rt.ChatID() != chatID {
+		t.Fatalf("runtime chat = %q", rt.ChatID())
+	}
 }
 
 func TestTerminalActivityIncludesSessionTitle(t *testing.T) {
