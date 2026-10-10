@@ -23,6 +23,11 @@ mac_check: true
 # WebSocket 切断後に agent を残す時間。モバイルのスリープ復帰などに使う。既定は 30m。
 detach_grace: 30m
 
+# 対話ターン 3, 10, 20, 以降 10 ごとでセッション名を自動更新する。
+# agent -p (ask) で日本語名を生成し、idle 時に /rename する。既定は有効。
+auto_rename:
+  enabled: true
+
 projects:
   - id: sample
     name: sample

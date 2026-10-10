@@ -38,6 +38,19 @@ Linux 版の `agent` は、認証トークンを `$XDG_CONFIG_HOME/cursor/auth.j
 
 切断時の busy/idle 判定のため、`<CURSOR_CONFIG_DIR>/cli-config.json` の `display.showStatusIndicators` を有効にする。`user upsert` とセッション開始時の `Ensure` が、既存の他設定を維持したままこの項目だけを立てる。
 
+WebSearch の毎回承認を避ける場合は、同じ `cli-config.json` の `autoAcceptWebSearch` を立てる。`cursor-auto-websearch` が既存の他設定を維持したままこの項目だけを有効にする。OS ユーザーの `~/.cursor` は見ない。
+
+### セッション名の自動更新
+
+Cursor CLI の auto-rename は初回メッセージ由来で英語寄りなため、本システムがターン数に応じて上書きする。
+
+1. `prompt_history.json` の件数をターン数とみなす。
+2. 件数が 3, 10, 20, 以降 10 の倍数になったとき、短寿命の `agent -p --mode ask` で日本語タイトルを生成する (対話用セッション枠は使わない)。命名用 `agent -p` はチャットあたり最大 3 回まで (`.wca-autoname.json` の `agent_launches` と runtime 内カウンタでハード制限)。
+3. runtime が idle のとき、本文と Enter を分けて PTY へ `/rename <title>` を送り、CLI 正規経路で `meta.json` と OSC タイトルを更新する。再送は最大 3 回。
+4. 進捗はチャットディレクトリの `.wca-autoname.json` に残す。手動リネームを検出したら以降はスキップする。
+
+設定は `config.yaml` の `auto_rename.enabled` (既定 true)。
+
 `HOME` は変えない。`agent` が起動するシェルの git や ssh は、サーバを実行している OS ユーザーのものを使う。一方 `gh` は設定を `$XDG_CONFIG_HOME/gh` に置くため、ユーザーごとの `XDG_CONFIG_HOME` 切り替えの影響を受ける。OS ユーザーの `~/.config/gh` は見えないので、初回は `gh-login` が同じ環境で `gh auth login` を実行する。認証情報は `<state_dir>/cursor/<username>/gh/` に保存される。
 
 サーバプロセスが IDE のサンドボックスから環境変数を引き継いでいる場合は、子プロセスへ渡す前にそのサンドボックス用の変数を除く。親が持つ `CURSOR_API_KEY` も除き、そのユーザーのファイルがあるときだけ付け直す。

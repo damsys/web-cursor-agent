@@ -82,3 +82,55 @@ func TestLayoutEnsureEnablesStatusIndicators(t *testing.T) {
 		t.Fatalf("layout ensure config = %#v", root)
 	}
 }
+
+func TestEnsureAutoAcceptWebSearchCreatesAndUpdates(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureAutoAcceptWebSearch(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, cliConfigName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root["autoAcceptWebSearch"] != true {
+		t.Fatalf("created config = %#v", root)
+	}
+
+	existing := []byte(`{
+  "version": 1,
+  "autoAcceptWebSearch": false,
+  "display": {
+    "mode": "zen"
+  },
+  "model": "keep-me"
+}
+`)
+	if err := os.WriteFile(path, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureAutoAcceptWebSearch(dir); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &root); err != nil {
+		t.Fatal(err)
+	}
+	if root["autoAcceptWebSearch"] != true {
+		t.Fatalf("updated autoAcceptWebSearch = %#v", root)
+	}
+	display := root["display"].(map[string]any)
+	if display["mode"] != "zen" {
+		t.Fatalf("mode should be kept: %#v", display)
+	}
+	if root["model"] != "keep-me" {
+		t.Fatalf("other keys should be kept: %#v", root)
+	}
+}

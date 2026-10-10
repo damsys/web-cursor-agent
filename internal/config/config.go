@@ -23,6 +23,12 @@ type Project struct {
 	Path string `yaml:"path"`
 }
 
+// AutoRename は対話ターン数に応じたセッション名の自動更新設定である。
+type AutoRename struct {
+	// Enabled が true のとき、閾値ターンで agent -p により命名し /rename する。
+	Enabled bool
+}
+
 // Config は起動時に確定した設定である。相対パスは設定ファイルの場所で解決済みにする。
 type Config struct {
 	Listen       string
@@ -34,20 +40,26 @@ type Config struct {
 	MacCheck     bool
 	// DetachGrace は WebSocket 切断後に agent を残す時間である。
 	DetachGrace time.Duration
+	AutoRename  AutoRename
 	Projects    []Project
 	Networks    []*net.IPNet
 }
 
+type fileAutoRename struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
 type fileConfig struct {
-	Listen       string    `yaml:"listen"`
-	UsersFile    string    `yaml:"users_file"`
-	StateDir     string    `yaml:"state_dir"`
-	AgentCommand string    `yaml:"agent_command"`
-	WebDir       string    `yaml:"web_dir"`
-	AllowCIDRs   []string  `yaml:"allow_cidrs"`
-	MacCheck     *bool     `yaml:"mac_check"`
-	DetachGrace  string    `yaml:"detach_grace"`
-	Projects     []Project `yaml:"projects"`
+	Listen       string          `yaml:"listen"`
+	UsersFile    string          `yaml:"users_file"`
+	StateDir     string          `yaml:"state_dir"`
+	AgentCommand string          `yaml:"agent_command"`
+	WebDir       string          `yaml:"web_dir"`
+	AllowCIDRs   []string        `yaml:"allow_cidrs"`
+	MacCheck     *bool           `yaml:"mac_check"`
+	DetachGrace  string          `yaml:"detach_grace"`
+	AutoRename   *fileAutoRename `yaml:"auto_rename"`
+	Projects     []Project       `yaml:"projects"`
 }
 
 // Load は設定ファイルを読み、相対パスを設定ファイルのディレクトリ基準で絶対パスにする。
@@ -74,10 +86,14 @@ func Load(path string) (Config, error) {
 		AllowCIDRs:   file.AllowCIDRs,
 		MacCheck:     true,
 		DetachGrace:  defaultDetachGrace,
+		AutoRename:   AutoRename{Enabled: true},
 		Projects:     file.Projects,
 	}
 	if file.MacCheck != nil {
 		cfg.MacCheck = *file.MacCheck
+	}
+	if file.AutoRename != nil && file.AutoRename.Enabled != nil {
+		cfg.AutoRename.Enabled = *file.AutoRename.Enabled
 	}
 	if file.DetachGrace != "" {
 		grace, err := time.ParseDuration(file.DetachGrace)

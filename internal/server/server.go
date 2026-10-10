@@ -50,9 +50,11 @@ type Server struct {
 	launch    LaunchFunc
 	// scheduleRestart はテストで差し替え可能。nil のときは systemd-run による実再起動。
 	scheduleRestart func() error
-	sessions        *sessionStore
-	runtimes        *runtimeHub
-	limiter         *loginLimiter
+	// nameGenerator は自動リネーム用。nil のときは agent -p を使う。
+	nameGenerator func(context.Context, nameGenRequest) (string, error)
+	sessions      *sessionStore
+	runtimes      *runtimeHub
+	limiter       *loginLimiter
 
 	restartMu      sync.Mutex
 	restartPending bool
@@ -437,6 +439,8 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		log.Printf("agent started user=%s project=%s chat=%s runtime=%s", user.Username, project.ID, chatID, rt.id)
 		if chatID == "" {
 			s.watchNewChat(rt, user.Username, project, knownChats)
+		} else {
+			s.startAutoRename(rt, user.Username, project)
 		}
 	}
 
@@ -702,6 +706,7 @@ func (s *Server) watchNewChat(rt *runtimeSession, username string, project confi
 				}
 				if s.runtimes.BindChat(rt, chat.ID) {
 					log.Printf("chat bound user=%s project=%s chat=%s runtime=%s", username, project.ID, chat.ID, rt.id)
+					s.startAutoRename(rt, username, project)
 					return
 				}
 				// 他 runtime が先に取った ID は known に足して次を探す。

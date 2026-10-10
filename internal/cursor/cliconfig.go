@@ -12,6 +12,34 @@ const cliConfigName = "cli-config.json"
 // EnsureStatusIndicators は端末タイトルに busy/idle を出す設定を有効にする。
 // WebSocket 切断時の即終了判定に使う。既存の他設定は維持する。
 func EnsureStatusIndicators(configDir string) error {
+	return updateCLIConfig(configDir, func(root map[string]any) (bool, error) {
+		display, _ := root["display"].(map[string]any)
+		if display == nil {
+			display = map[string]any{}
+			root["display"] = display
+		}
+		if enabled, ok := display["showStatusIndicators"].(bool); ok && enabled {
+			return false, nil
+		}
+		display["showStatusIndicators"] = true
+		return true, nil
+	})
+}
+
+// EnsureAutoAcceptWebSearch は WebSearch を承認なしで実行できる設定を有効にする。
+// 対象は <CURSOR_CONFIG_DIR>/cli-config.json。既存の他設定は維持する。
+func EnsureAutoAcceptWebSearch(configDir string) error {
+	return updateCLIConfig(configDir, func(root map[string]any) (bool, error) {
+		if enabled, ok := root["autoAcceptWebSearch"].(bool); ok && enabled {
+			return false, nil
+		}
+		root["autoAcceptWebSearch"] = true
+		return true, nil
+	})
+}
+
+// updateCLIConfig は cli-config.json を読み、mutate が変更した場合だけ原子的に書き戻す。
+func updateCLIConfig(configDir string, mutate func(root map[string]any) (changed bool, err error)) error {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return fmt.Errorf("create cursor config dir: %w", err)
 	}
@@ -28,15 +56,13 @@ func EnsureStatusIndicators(configDir string) error {
 	default:
 		return fmt.Errorf("read cli-config.json: %w", err)
 	}
-	display, _ := root["display"].(map[string]any)
-	if display == nil {
-		display = map[string]any{}
-		root["display"] = display
+	changed, err := mutate(root)
+	if err != nil {
+		return err
 	}
-	if enabled, ok := display["showStatusIndicators"].(bool); ok && enabled {
+	if !changed {
 		return nil
 	}
-	display["showStatusIndicators"] = true
 	out, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode cli-config.json: %w", err)

@@ -63,6 +63,12 @@ bin/web-cursor-agent cursor-login --config config.yaml --username alice
 
 ブラウザを開かず URL だけ出す場合は、先頭に `NO_OPEN_BROWSER=1` を付けて実行する。API キーを使う場合は、ログインの代わりに `var/cursor/alice/api_key` へキーを 1 行で書き、権限を `600` にする。
 
+WebSearch を毎回承認せずに使いたいときは、ユーザーごとの `CURSOR_CONFIG_DIR` (`var/cursor/<username>/cursor/cli-config.json`) で自動承認を有効にする。`~/.cursor` ではなく、このパスを書き換える。
+
+```bash
+bin/web-cursor-agent cursor-auto-websearch --config config.yaml --username alice
+```
+
 5. そのユーザー環境で GitHub CLI (`gh`) にログインする。エージェント起動時は `XDG_CONFIG_HOME` をユーザーごとに切り替えるため、OS ユーザーの `~/.config/gh` は参照されない。
 
 ```bash
@@ -100,6 +106,15 @@ netsh advfirewall firewall add rule name="web-cursor-agent 8787" dir=in action=a
 ```
 
 パスワードや MAC アドレスを変更するときも、同じ `user upsert` を使う。`--mac` を省略すると、登録済みの MAC アドレスは維持される。リストを空にするときは `--clear-macs` を付ける。
+
+セッション名は、対話ターンが 3 / 10 / 20 / 以降 10 ごとになると自動で日本語へ更新する (既定オン)。`agent -p --mode ask` で名前を生成し、idle 時に `/rename` する。命名用エージェントはチャットあたり最大 3 回までしか起動しない。止めるときは `config.yaml` に次を書く。
+
+```yaml
+auto_rename:
+  enabled: false
+```
+
+手動で `/rename` したあとは、そのセッションの自動更新は止める。
 
 ## 常駐 / PC 起動時自動起動
 
@@ -237,6 +252,7 @@ WSL 内の systemd 設定はそのままでよい。
     - config.yaml
         - プロジェクトの一覧
         - `detach_grace` (WebSocket 切断後に agent を残す時間。既定 `30m`)
+        - `auto_rename.enabled` (ターン数に応じたセッション名の自動更新。既定 `true`)
     - users.yaml
         - ユーザーの一覧
             - ユーザー名
@@ -247,5 +263,7 @@ WSL 内の systemd 設定はそのままでよい。
     - ユーザーの追加・更新
         - ユーザー名の入力とパスワードの入力を受け付けて `users.yaml` に追加・更新する。
         - あわせてそのユーザーの Cursor ホームと CLI status indicators を用意する。
+    - `cursor-auto-websearch`
+        - ユーザーごとの `CURSOR_CONFIG_DIR/cli-config.json` で WebSearch の自動承認 (`autoAcceptWebSearch`) を有効にする。
     - `gh-login` / `gh-status`
         - ユーザーごとの `XDG_CONFIG_HOME` で GitHub CLI のログインと状態確認を行う。

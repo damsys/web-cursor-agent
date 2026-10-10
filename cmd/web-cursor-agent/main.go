@@ -40,6 +40,8 @@ func main() {
 		code = cursorCommand(os.Args[2:], "login")
 	case "cursor-status":
 		code = cursorCommand(os.Args[2:], "status")
+	case "cursor-auto-websearch":
+		code = cursorAutoWebSearch(os.Args[2:])
 	case "gh-login":
 		code = ghCommand(os.Args[2:], "login")
 	case "gh-status":
@@ -61,6 +63,7 @@ func usage() {
   web-cursor-agent user list --config config.yaml
   web-cursor-agent cursor-login --config config.yaml --username NAME
   web-cursor-agent cursor-status --config config.yaml --username NAME
+  web-cursor-agent cursor-auto-websearch --config config.yaml --username NAME
   web-cursor-agent gh-login --config config.yaml --username NAME
   web-cursor-agent gh-status --config config.yaml --username NAME
 `)
@@ -237,6 +240,50 @@ func cursorCommand(args []string, action string) int {
 		cmd.Env = layout.Environ(os.Environ())
 		return cmd, nil
 	})
+}
+
+// cursorAutoWebSearch はユーザーの CURSOR_CONFIG_DIR にある cli-config.json で
+// WebSearch の自動承認 (autoAcceptWebSearch) を有効にする。
+func cursorAutoWebSearch(args []string) int {
+	fs := flag.NewFlagSet("cursor-auto-websearch", flag.ContinueOnError)
+	configPath := fs.String("config", "config.yaml", "path to config.yaml")
+	username := fs.String("username", "", "user name")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *username == "" {
+		log.Printf("username is required")
+		return 2
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Printf("load config: %v", err)
+		return 1
+	}
+	file, err := users.Load(cfg.UsersFile)
+	if err != nil {
+		log.Printf("load users: %v", err)
+		return 1
+	}
+	if _, ok := file.Find(*username); !ok {
+		log.Printf("unknown user %q", *username)
+		return 1
+	}
+	layout, err := cursor.LayoutFor(cfg.StateDir, *username)
+	if err != nil {
+		log.Printf("cursor home: %v", err)
+		return 1
+	}
+	if err := layout.Ensure(); err != nil {
+		log.Printf("cursor home: %v", err)
+		return 1
+	}
+	if err := cursor.EnsureAutoAcceptWebSearch(layout.ConfigDir); err != nil {
+		log.Printf("enable autoAcceptWebSearch: %v", err)
+		return 1
+	}
+	fmt.Printf("WebSearch の自動承認を有効にしました: %s\n", *username)
+	return 0
 }
 
 // ghCommand はユーザーごとの XDG_CONFIG_HOME で GitHub CLI を動かす。

@@ -75,6 +75,37 @@ func TestLoadCanDisableMacCheck(t *testing.T) {
 	}
 }
 
+func TestLoadAutoRenameDefaultsEnabled(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("projects: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoRename.Enabled {
+		t.Fatal("auto_rename should default to enabled")
+	}
+}
+
+func TestLoadCanDisableAutoRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte("auto_rename:\n  enabled: false\nprojects: []\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoRename.Enabled {
+		t.Fatal("auto_rename should be disabled")
+	}
+}
+
 func TestLoadRejectsDuplicateProjectID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
