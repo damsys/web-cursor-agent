@@ -139,6 +139,14 @@ a.primary {
   gap: 0.7rem;
 }
 
+.connection-links {
+  margin: 0 0 1rem;
+}
+
+.connection-links a.secondary {
+  width: 100%;
+}
+
 .card {
   display: block;
   width: 100%;

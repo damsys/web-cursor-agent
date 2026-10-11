@@ -108,6 +108,7 @@ function renderLogin(message) {
   app.innerHTML = `
     <main class="screen narrow">
       <h1>ログイン</h1>
+      <nav id="connection-links" class="connection-links stack" aria-label="接続案内"></nav>
       <form id="login-form" class="stack">
         <label>
           <span>ユーザー名</span>
@@ -122,6 +123,7 @@ function renderLogin(message) {
       </form>
     </main>
   `;
+  fillConnectionLinks(app);
   const error = document.querySelector("#login-error");
   error.textContent = message || "";
   document
@@ -145,6 +147,34 @@ function renderLogin(message) {
     });
 }
 
+// HTTPS 誘導と証明書セットアップへのリンクを置く。
+async function fillConnectionLinks(root) {
+  const nav = root.querySelector("#connection-links");
+  if (!nav) {
+    return;
+  }
+  let site;
+  try {
+    site = await api("/api/site");
+  } catch {
+    nav.hidden = true;
+    return;
+  }
+  nav.replaceChildren();
+  if (site.tlsEnabled && location.protocol === "http:" && site.httpsUrl) {
+    const httpsLink = document.createElement("a");
+    httpsLink.className = "secondary";
+    httpsLink.href = site.httpsUrl;
+    httpsLink.textContent = "HTTPS で開く";
+    nav.append(httpsLink);
+  }
+  const setupLink = document.createElement("a");
+  setupLink.className = "secondary";
+  setupLink.href = site.setupUrl || "/setup";
+  setupLink.textContent = "証明書のインストール";
+  nav.append(setupLink);
+}
+
 async function renderProjects() {
   setDocumentTitle();
   app.innerHTML = `
@@ -153,6 +183,7 @@ async function renderProjects() {
         <h1>プロジェクト</h1>
         <button class="secondary" id="logout" type="button">ログアウト</button>
       </div>
+      <nav id="connection-links" class="connection-links stack" aria-label="接続案内"></nav>
       <div id="project-list" class="stack"></div>
       <section class="maintenance" id="maintenance">
         <h2>メンテナンス</h2>
@@ -162,6 +193,7 @@ async function renderProjects() {
       <p class="meta build-info" id="build-info">ビルド: …</p>
     </main>
   `;
+  fillConnectionLinks(app);
   document.querySelector("#logout").addEventListener("click", logout);
   document
     .querySelector("#restart-service")

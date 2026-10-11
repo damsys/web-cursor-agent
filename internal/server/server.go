@@ -91,12 +91,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/site", s.handleSite)
 	mux.HandleFunc("GET /api/build", s.handleBuild)
 	mux.HandleFunc("GET /api/projects", s.handleProjects)
 	mux.HandleFunc("GET /api/projects/{id}/sessions", s.handleSessions)
 	mux.HandleFunc("POST /api/projects/{id}/sessions/{chatId}/hide", s.handleHideSession)
 	mux.HandleFunc("POST /api/maintenance/restart", s.handleMaintenanceRestart)
 	mux.HandleFunc("GET /ws/terminal", s.handleTerminal)
+	mux.HandleFunc("GET /setup", s.handleSetupIndex)
+	mux.HandleFunc("GET /setup/", s.handleSetupIndex)
+	mux.HandleFunc("GET /setup/ca.mobileconfig", s.handleSetupMobileconfig)
+	mux.HandleFunc("GET /setup/ca.cer", s.handleSetupCACer)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.Handle(
 		"GET /static/",
@@ -155,6 +160,24 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, s.buildInfo())
+}
+
+// handleSite はログイン前でも使える接続案内 (HTTPS URL /setup) を返す。
+func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	body := map[string]any{
+		"tlsEnabled": s.cfg.TLS.Enabled(),
+		"setupUrl":   "/setup",
+	}
+	if s.cfg.TLS.Enabled() {
+		port, err := s.cfg.TLSListenPort()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorBody("サーバ設定に問題があります"))
+			return
+		}
+		body["httpsUrl"] = "https://" + net.JoinHostPort(s.cfg.TLS.PublicHost, port) + "/"
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 type buildInfo struct {

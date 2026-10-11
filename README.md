@@ -77,13 +77,40 @@ bin/web-cursor-agent gh-login --config config.yaml --username alice
 
 状態の確認は `gh-status` を使う。`gh` 自体は `mise install` で入れる。
 
-6. サーバを起動する。
+6. (任意) iOS でマイクや Web Speech を使う場合は家庭内 HTTPS を有効にする。自家 CA とサーバ証明書を生成する。
+
+```bash
+bin/web-cursor-agent tls init --config config.yaml --hosts wca.lan
+```
+
+出力に従い `config.yaml` へ `tls` 節を追加する (`cert_file` / `key_file` / `ca_file` / `public_host`)。証明書パスは `config.yaml` からの相対パスでよい（例: `var/tls/server.crt`）。`public_host` は証明書の DNS 名と同じにし、その名前がサーバの LAN IP に解決されるようにする。IP アドレスだけで HTTPS を開くと証明書エラーになる。
+
+サーバ証明書だけを更新するときは CA を残して再発行する。
+
+```bash
+bin/web-cursor-agent tls reissue --config config.yaml --hosts wca.lan
+```
+
+7. サーバを起動する。
 
 ```bash
 bin/web-cursor-agent serve --config config.yaml
 ```
 
-7. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。
+TLS を有効にしているとき、HTTP (`listen`、既定 8787) と HTTPS (`tls.listen`、既定 8788) を別ポートで受け付ける。どちらでも通常のサービスを提供する。マイクや Web Speech が必要なときだけ HTTPS を使い、構成プロファイルは HTTP の `/setup` から配布する。
+
+8. ブラウザでサーバを開く。WSL2 の `0.0.0.0` は WSL の仮想 NIC だけを指す。Windows 自身のブラウザは `http://127.0.0.1:8787` か、WSL の eth0 アドレスで開く。HTTPS 利用時は `https://wca.lan:8788/` のようにホスト名で開く。
+
+### iOS への CA インストール
+
+TLS 有効後、各 iPhone / iPad で一度だけ次を行う。
+
+1. Safari で `http://<LAN-IP>:8787/setup` を開く (ここでは IP でよい)。
+2. 「構成プロファイルを入れる」からインストールする。「署名されていません」と出ても家庭内用途では問題ない。
+3. **設定 → 一般 → 情報 → 証明書信頼設定** で「web-cursor-agent CA」をオンにする。プロファイル導入だけでは不十分で、ここを忘れると警告が続く。
+4. マイク / Speech を使うときは `https://<public_host>:8788/` を開く。通常利用はこれまでどおり HTTP でよい。
+
+VPN から使う場合は、VPN クライアント網を `allow_cidrs` に追加し、同じホスト名がサーバへ解決されるようにする。MAC チェックは VPN では期待しない。
 
 常駐させて同じ LAN の別端末から開く場合は、ポート転送を使わず WSL のミラーモードにする。`%USERPROFILE%\.wslconfig` に次を書き、`wsl --shutdown` で反映する。反映には起動中の WSL がすべて止まる。
 
@@ -92,17 +119,18 @@ bin/web-cursor-agent serve --config config.yaml
 networkingMode=mirrored
 ```
 
-ミラーモードでは Windows の LAN アドレスが WSL からも見える。受信は Hyper-V ファイアウォールで TCP `8787` だけ許可する。管理者の PowerShell で次を実行する。`{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` は、WSL という作成元を表すどの PC でも同じ ID である。
+ミラーモードでは Windows の LAN アドレスが WSL からも見える。受信は Hyper-V ファイアウォールで TCP `8787` と `8788` を許可する。管理者の PowerShell で次を実行する。`{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` は、WSL という作成元を表すどの PC でも同じ ID である。
 
 ```powershell
-New-NetFirewallHyperVRule -Name "web-cursor-agent" -DisplayName "web-cursor-agent" -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" -Protocol TCP -LocalPorts 8787
+New-NetFirewallHyperVRule -Name "web-cursor-agent" -DisplayName "web-cursor-agent" -Direction Inbound -VMCreatorId "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}" -Protocol TCP -LocalPorts 8787,8788
 ```
 
-NAT のまま一時的に LAN へ出す場合だけ、管理者の PowerShell で WSL の eth0 アドレスへ転送する。接続先を `127.0.0.1` にすると、`0.0.0.0` で待つ転送自身へ戻り、接続が周回する。アドレスは WSL で `hostname -I` を実行して得る。このアドレスは WSL の再起動で変わるため、常駐の転送先にはしない。
+NAT のまま一時的に LAN へ出す場合だけ、管理者の PowerShell で WSL の eth0 アドレスへ転送する。接続先を `127.0.0.1` にすると、`0.0.0.0` で待つ転送自身へ戻り、接続が周回する。アドレスは WSL で `hostname -I` を実行して得る。このアドレスは WSL の再起動で変わるため、常駐の転送先にはしない。HTTP と HTTPS の両方を転送する。
 
 ```powershell
 netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8787 connectaddress=<WSL の eth0 アドレス> connectport=8787
-netsh advfirewall firewall add rule name="web-cursor-agent 8787" dir=in action=allow protocol=TCP localport=8787 profile=private
+netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8788 connectaddress=<WSL の eth0 アドレス> connectport=8788
+netsh advfirewall firewall add rule name="web-cursor-agent 8787-8788" dir=in action=allow protocol=TCP localport=8787,8788 profile=private
 ```
 
 パスワードや MAC アドレスを変更するときも、同じ `user upsert` を使う。`--mac` を省略すると、登録済みの MAC アドレスは維持される。リストを空にするときは `--clear-macs` を付ける。
@@ -235,6 +263,7 @@ WSL 内の systemd 設定はそのままでよい。
 - ユーザー名 + パスワードによる認証
 - 同一セグメントからのアクセス制限
 - ユーザーごとの MAC アドレスでのアクセス制限
+- (任意) アプリ内蔵 TLS。構成プロファイルは HTTP `/setup` から LAN 内にだけ配信し、CA 秘密鍵は出さない
 
 ## UI
 
@@ -253,6 +282,7 @@ WSL 内の systemd 設定はそのままでよい。
         - プロジェクトの一覧
         - `detach_grace` (WebSocket 切断後に agent を残す時間。既定 `30m`)
         - `auto_rename.enabled` (ターン数に応じたセッション名の自動更新。既定 `true`)
+        - `tls` (任意。家庭内 HTTPS。`listen` / `cert_file` / `key_file` / `ca_file` / `public_host`。HTTPS 既定ポート 8788)
     - users.yaml
         - ユーザーの一覧
             - ユーザー名
@@ -263,6 +293,8 @@ WSL 内の systemd 設定はそのままでよい。
     - ユーザーの追加・更新
         - ユーザー名の入力とパスワードの入力を受け付けて `users.yaml` に追加・更新する。
         - あわせてそのユーザーの Cursor ホームと CLI status indicators を用意する。
+    - `tls init` / `tls reissue`
+        - 自家 CA とサーバ証明書、iOS 向け構成プロファイルを `<state_dir>/tls/` に作る / サーバ証明書だけ再発行する。
     - `cursor-auto-websearch`
         - ユーザーごとの `CURSOR_CONFIG_DIR/cli-config.json` で WebSearch の自動承認 (`autoAcceptWebSearch`) を有効にする。
     - `gh-login` / `gh-status`

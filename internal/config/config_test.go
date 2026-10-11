@@ -123,3 +123,103 @@ projects:
 		t.Fatal("expected duplicate id error")
 	}
 }
+
+func TestLoadTLS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte(`
+projects: []
+tls:
+  cert_file: ./tls/server.crt
+  key_file: ./tls/server.key
+  ca_file: ./tls/ca.crt
+  public_host: wca.lan
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TLS.Enabled() {
+		t.Fatal("TLS should be enabled")
+	}
+	if cfg.TLS.CertFile != filepath.Join(dir, "tls", "server.crt") {
+		t.Fatalf("cert = %s", cfg.TLS.CertFile)
+	}
+	if cfg.TLS.PublicHost != "wca.lan" {
+		t.Fatalf("host = %s", cfg.TLS.PublicHost)
+	}
+	port, err := cfg.ListenPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if port != "8787" {
+		t.Fatalf("port = %s", port)
+	}
+	if cfg.TLS.Listen != "0.0.0.0:8788" {
+		t.Fatalf("tls.listen = %s", cfg.TLS.Listen)
+	}
+	tlsPort, err := cfg.TLSListenPort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tlsPort != "8788" {
+		t.Fatalf("tls port = %s", tlsPort)
+	}
+}
+
+func TestLoadTLSRejectsSameListenPort(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte(`
+listen: "127.0.0.1:8787"
+projects: []
+tls:
+  listen: "127.0.0.1:8787"
+  cert_file: ./tls/server.crt
+  key_file: ./tls/server.key
+  public_host: wca.lan
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected same-port error")
+	}
+}
+
+func TestLoadTLSRequiresPublicHost(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte(`
+projects: []
+tls:
+  cert_file: ./tls/server.crt
+  key_file: ./tls/server.key
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected public_host error")
+	}
+}
+
+func TestLoadTLSRejectsPartialFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	body := []byte(`
+projects: []
+tls:
+  cert_file: ./tls/server.crt
+  public_host: wca.lan
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected cert/key pair error")
+	}
+}

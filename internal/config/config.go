@@ -7,12 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-const defaultDetachGrace = 30 * time.Minute
+const (
+	defaultDetachGrace = 30 * time.Minute
+	defaultHTTPListen  = "0.0.0.0:8787"
+	defaultTLSPort     = "8788"
+)
 
 var projectIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
@@ -29,6 +34,21 @@ type AutoRename struct {
 	Enabled bool
 }
 
+// TLS はアプリ内蔵 HTTPS とセットアップ用 CA 配布の設定である。
+type TLS struct {
+	// Listen は HTTPS の待受アドレス。未指定時は listen と同じホストでポート 8788。
+	Listen     string
+	CertFile   string
+	KeyFile    string
+	CAFile     string
+	PublicHost string
+}
+
+// Enabled はサーバ証明書と秘密鍵が揃っているとき true である。
+func (t TLS) Enabled() bool {
+	return t.CertFile != "" && t.KeyFile != ""
+}
+
 // Config は起動時に確定した設定である。相対パスは設定ファイルの場所で解決済みにする。
 type Config struct {
 	Listen       string
@@ -41,12 +61,21 @@ type Config struct {
 	// DetachGrace は WebSocket 切断後に agent を残す時間である。
 	DetachGrace time.Duration
 	AutoRename  AutoRename
+	TLS         TLS
 	Projects    []Project
 	Networks    []*net.IPNet
 }
 
 type fileAutoRename struct {
 	Enabled *bool `yaml:"enabled"`
+}
+
+type fileTLS struct {
+	Listen     string `yaml:"listen"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	CAFile     string `yaml:"ca_file"`
+	PublicHost string `yaml:"public_host"`
 }
 
 type fileConfig struct {
@@ -59,6 +88,7 @@ type fileConfig struct {
 	MacCheck     *bool           `yaml:"mac_check"`
 	DetachGrace  string          `yaml:"detach_grace"`
 	AutoRename   *fileAutoRename `yaml:"auto_rename"`
+	TLS          *fileTLS        `yaml:"tls"`
 	Projects     []Project       `yaml:"projects"`
 }
 
@@ -106,7 +136,10 @@ func Load(path string) (Config, error) {
 		cfg.DetachGrace = grace
 	}
 	if cfg.Listen == "" {
-		cfg.Listen = "0.0.0.0:8787"
+		cfg.Listen = defaultHTTPListen
+	}
+	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
+		return Config{}, fmt.Errorf("invalid listen address %q: %w", cfg.Listen, err)
 	}
 	if cfg.UsersFile == "" {
 		cfg.UsersFile = "users.yaml"
@@ -120,9 +153,56 @@ func Load(path string) (Config, error) {
 	if cfg.WebDir == "" {
 		cfg.WebDir = "web"
 	}
+	if file.TLS != nil {
+		cfg.TLS = TLS{
+			Listen:     strings.TrimSpace(file.TLS.Listen),
+			CertFile:   file.TLS.CertFile,
+			KeyFile:    file.TLS.KeyFile,
+			CAFile:     file.TLS.CAFile,
+			PublicHost: strings.TrimSpace(file.TLS.PublicHost),
+		}
+	}
+	if (cfg.TLS.CertFile == "") != (cfg.TLS.KeyFile == "") {
+		return Config{}, fmt.Errorf("tls.cert_file and tls.key_file must be set together")
+	}
+	if cfg.TLS.Enabled() && cfg.TLS.PublicHost == "" {
+		return Config{}, fmt.Errorf("tls.public_host is required when TLS is enabled")
+	}
+	if cfg.TLS.PublicHost != "" {
+		if strings.Contains(cfg.TLS.PublicHost, "://") || strings.Contains(cfg.TLS.PublicHost, "/") {
+			return Config{}, fmt.Errorf("tls.public_host must be a bare hostname")
+		}
+		if host, _, err := net.SplitHostPort(cfg.TLS.PublicHost); err == nil && host != "" {
+			return Config{}, fmt.Errorf("tls.public_host must not include a port")
+		}
+	}
+	if cfg.TLS.Enabled() {
+		if cfg.TLS.Listen == "" {
+			tlsListen, err := ReplaceListenPort(cfg.Listen, defaultTLSPort)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.TLS.Listen = tlsListen
+		}
+		if _, _, err := net.SplitHostPort(cfg.TLS.Listen); err != nil {
+			return Config{}, fmt.Errorf("invalid tls.listen address %q: %w", cfg.TLS.Listen, err)
+		}
+		if cfg.TLS.Listen == cfg.Listen {
+			return Config{}, fmt.Errorf("tls.listen must differ from listen (HTTP and HTTPS use separate ports)")
+		}
+	}
 	cfg.UsersFile = resolve(dir, cfg.UsersFile)
 	cfg.StateDir = resolve(dir, cfg.StateDir)
 	cfg.WebDir = resolve(dir, cfg.WebDir)
+	if cfg.TLS.CertFile != "" {
+		cfg.TLS.CertFile = resolve(dir, cfg.TLS.CertFile)
+	}
+	if cfg.TLS.KeyFile != "" {
+		cfg.TLS.KeyFile = resolve(dir, cfg.TLS.KeyFile)
+	}
+	if cfg.TLS.CAFile != "" {
+		cfg.TLS.CAFile = resolve(dir, cfg.TLS.CAFile)
+	}
 	seen := map[string]struct{}{}
 	for i := range cfg.Projects {
 		project := &cfg.Projects[i]
@@ -190,7 +270,50 @@ func (c Config) CheckRuntime() error {
 	if _, err := os.Stat(xterm); err != nil {
 		return fmt.Errorf("xterm assets are missing (run make -f Makefile.agent build): %w", err)
 	}
+	if c.TLS.Enabled() {
+		if _, err := os.Stat(c.TLS.CertFile); err != nil {
+			return fmt.Errorf("tls cert file: %w", err)
+		}
+		if _, err := os.Stat(c.TLS.KeyFile); err != nil {
+			return fmt.Errorf("tls key file: %w", err)
+		}
+		if c.TLS.CAFile != "" {
+			if _, err := os.Stat(c.TLS.CAFile); err != nil {
+				return fmt.Errorf("tls CA file: %w", err)
+			}
+		}
+	}
 	return nil
+}
+
+// ListenPort は HTTP の listen 設定から待受ポートを返す。
+func (c Config) ListenPort() (string, error) {
+	_, port, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		return "", fmt.Errorf("invalid listen address %q: %w", c.Listen, err)
+	}
+	return port, nil
+}
+
+// TLSListenPort は HTTPS の tls.listen から待受ポートを返す。
+func (c Config) TLSListenPort() (string, error) {
+	if !c.TLS.Enabled() {
+		return "", fmt.Errorf("TLS is not enabled")
+	}
+	_, port, err := net.SplitHostPort(c.TLS.Listen)
+	if err != nil {
+		return "", fmt.Errorf("invalid tls.listen address %q: %w", c.TLS.Listen, err)
+	}
+	return port, nil
+}
+
+// ReplaceListenPort は host:port のポートだけを差し替える。
+func ReplaceListenPort(addr, port string) (string, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid listen address %q: %w", addr, err)
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 func resolve(base, path string) string {

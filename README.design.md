@@ -71,6 +71,18 @@ UNIX ユーザーをアプリのユーザーごとに作る方式は採らない
 
 状態を変えるリクエストと WebSocket は、`Origin` がリクエストの Host と一致するときだけ受け付ける。
 
+## 家庭内 HTTPS
+
+iOS Safari のマイクや Web Speech は secure context (HTTPS) が必要なため、リバースプロキシを置かずアプリが直接 TLS を終端する。`X-Forwarded-For` を見ない設計と両立させるためである。
+
+- `tls init --hosts <DNS名>` が自家 CA、サーバ証明書、未署名の `.mobileconfig` を `<state_dir>/tls/` に作る。SAN には少なくとも 1 つの DNS 名を必須とする。
+- `config.yaml` の `tls.cert_file` / `tls.key_file` / `tls.ca_file` / `tls.public_host` で有効化する。証明書パスは他のパス設定と同様、設定ファイルからの相対パスでよい。
+- TLS 有効時は HTTP (`listen`、既定 8787) と HTTPS (`tls.listen`、未指定時は同じホストで 8788) を別ポートで待つ。どちらでも同じアプリを提供し、HTTPS への強制リダイレクトはしない。マイク / Web Speech 用に HTTPS を選べる。
+- ログイン画面とプロジェクト一覧は `GET /api/site` を見て、HTTP 利用中かつ TLS 有効なら HTTPS へのリンクと、`/setup`（証明書インストール）へのリンクを出す。
+- `/setup` はログイン不要で、同一セグメント / `allow_cidrs` の制限だけを受ける。構成プロファイルと CA の DER を返す。CA 秘密鍵は配信しない。
+- サーバ証明書だけ期限切れになったときは `tls reissue` で CA を維持したまま作り直す。端末への CA 再インストールは不要なことが多い。
+- VPN 経由では接続元が別セグメントになるため `allow_cidrs` に VPN 網を足す。MAC チェックは期待しない。ホスト名が同じサーバへ解決されれば Speech も LAN と同様に使える。
+
 ログイン済みユーザーは `POST /api/maintenance/restart` でサービス再起動を予約できる。サーバは `systemd-run --user` で自プロセスから切り離し、短時間待ってから `systemctl --user restart web-cursor-agent.service` を実行する。ビルドは含めない。進行中の再起動予約があるあいだの再リクエストは拒否する。
 
 `mac_check` の既定は有効である。WSL2 の NAT では、サーバから見える接続元が Windows 側の仮想アダプタになり、スマートフォンの MAC アドレスを観測できない。その環境では `mac_check` を無効にし、パスワードと同一セグメント制限で運用する。Linux や WSL のミラーモードのように、接続元が同一 L2 に見える場合は有効のままにする。
@@ -98,7 +110,7 @@ WebSocket のテキストフレームは JSON の制御メッセージである�
 
 ## 設定
 
-`config.yaml` はプロジェクト一覧、待受アドレス、ユーザーファイル、状態ディレクトリ、`agent` のコマンド、画面ファイルの場所、追加で許可する CIDR、MAC 確認の有無、WebSocket 切断後の猶予 `detach_grace` を持つ。相対パスは設定ファイルのあるディレクトリを基準に解決する。
+`config.yaml` はプロジェクト一覧、待受アドレス、ユーザーファイル、状態ディレクトリ、`agent` のコマンド、画面ファイルの場所、追加で許可する CIDR、MAC 確認の有無、WebSocket 切断後の猶予 `detach_grace`、任意の `tls` (`listen`・証明書パス・`public_host`) を持つ。相対パスは設定ファイルのあるディレクトリを基準に解決する。
 
 `users.yaml` はユーザー名、パスワードハッシュ、MAC アドレスのリストを持つ。更新は `user upsert` が行い、一時ファイルへ書いてから置き換える。権限は `0600` とする。
 
