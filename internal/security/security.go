@@ -35,7 +35,13 @@ func Contains(ip net.IP, local []net.IPNet, extra []*net.IPNet) bool {
 
 // LocalNetworks は LAN 判定に使うインターフェースのサブネットを返す。
 // コンテナ用のブリッジは、家庭内 LAN のセグメントと混ぜない。
+// 結果は短時間キャッシュし、全リクエストでの IF 列挙を避ける。
 func LocalNetworks() ([]net.IPNet, error) {
+	return cachedLocalNetworks()
+}
+
+// listLocalNetworks はキャッシュせずにインターフェースを列挙する。
+func listLocalNetworks() ([]net.IPNet, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("list interfaces: %w", err)

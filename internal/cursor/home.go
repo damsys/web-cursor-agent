@@ -19,6 +19,11 @@ import (
 // chatIDPattern は agent が使うチャットディレクトリ名 (UUID) に合わせる。
 var chatIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// ValidChatID は Cursor のチャットディレクトリ名として使える UUID かを返す。
+func ValidChatID(id string) bool {
+	return chatIDPattern.MatchString(id)
+}
+
 // Layout は 1 人のアプリユーザーに割り当てる Cursor のディレクトリである。
 type Layout struct {
 	XDGConfigHome string
@@ -231,7 +236,7 @@ func scanChats(dataDir, projectPath string) ([]Chat, error) {
 			continue
 		}
 		id := entry.Name()
-		if !chatIDPattern.MatchString(id) {
+		if !ValidChatID(id) {
 			continue
 		}
 		meta, ok := readChatMeta(filepath.Join(dir, id, "meta.json"), projectPath)

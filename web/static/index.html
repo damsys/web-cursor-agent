@@ -10,12 +10,26 @@
     <title>Cursor</title>
     <link rel="stylesheet" href="/vendor/@xterm/xterm/css/xterm.css" />
     <link rel="stylesheet" href="/static/app.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "/static/js/state.js": "/static/js/state.js?v=__WCA_V__",
+          "/static/js/api.js": "/static/js/api.js?v=__WCA_V__",
+          "/static/js/keys.js": "/static/js/keys.js?v=__WCA_V__",
+          "/static/js/title.js": "/static/js/title.js?v=__WCA_V__",
+          "/static/js/router.js": "/static/js/router.js?v=__WCA_V__",
+          "/static/js/attach.js": "/static/js/attach.js?v=__WCA_V__",
+          "/static/js/screens.js": "/static/js/screens.js?v=__WCA_V__",
+          "/static/js/terminal.js": "/static/js/terminal.js?v=__WCA_V__"
+        }
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>
     <script src="/vendor/@xterm/xterm/lib/xterm.js"></script>
     <script src="/vendor/@xterm/addon-fit/lib/addon-fit.js"></script>
     <script src="/static/build-info.js"></script>
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

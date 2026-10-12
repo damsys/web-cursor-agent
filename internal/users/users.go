@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -33,8 +35,62 @@ func ValidUsername(name string) bool {
 	return usernamePattern.MatchString(name)
 }
 
+type usersCacheEntry struct {
+	mu      sync.Mutex
+	modTime time.Time
+	size    int64
+	missing bool
+	loaded  bool
+	file    File
+}
+
+var usersCache sync.Map // path -> *usersCacheEntry
+
 // Load はユーザーファイルを読む。ファイルが無い場合は空の一覧を返す。
+// mtime とサイズが変わらないあいだは再読込を避け、ファイル更新は次回 Load で反映する。
 func Load(path string) (File, error) {
+	abs := path
+	if resolved, err := filepath.Abs(path); err == nil {
+		abs = resolved
+	}
+	entryAny, _ := usersCache.LoadOrStore(abs, &usersCacheEntry{})
+	entry := entryAny.(*usersCacheEntry)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	info, err := os.Stat(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		if entry.loaded && entry.missing {
+			return File{}, nil
+		}
+		entry.modTime = time.Time{}
+		entry.size = 0
+		entry.missing = true
+		entry.loaded = true
+		entry.file = File{}
+		return File{}, nil
+	}
+	if err != nil {
+		return File{}, fmt.Errorf("read users: %w", err)
+	}
+	if entry.loaded && !entry.missing &&
+		entry.modTime.Equal(info.ModTime()) && entry.size == info.Size() {
+		return cloneFile(entry.file), nil
+	}
+
+	file, err := loadUsersFile(abs)
+	if err != nil {
+		return File{}, err
+	}
+	entry.modTime = info.ModTime()
+	entry.size = info.Size()
+	entry.missing = false
+	entry.loaded = true
+	entry.file = file
+	return cloneFile(file), nil
+}
+
+func loadUsersFile(path string) (File, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return File{}, nil
@@ -56,8 +112,34 @@ func Load(path string) (File, error) {
 	return file, nil
 }
 
+func cloneFile(file File) File {
+	if file.Users == nil {
+		return File{}
+	}
+	usersCopy := make([]User, len(file.Users))
+	copy(usersCopy, file.Users)
+	for i := range usersCopy {
+		if usersCopy[i].MACAddresses == nil {
+			continue
+		}
+		macs := make([]string, len(usersCopy[i].MACAddresses))
+		copy(macs, usersCopy[i].MACAddresses)
+		usersCopy[i].MACAddresses = macs
+	}
+	return File{Users: usersCopy}
+}
+
+func invalidateUsersCache(path string) {
+	abs := path
+	if resolved, err := filepath.Abs(path); err == nil {
+		abs = resolved
+	}
+	usersCache.Delete(abs)
+}
+
 // Save は一時ファイルへ書いてから置き換え、権限を所有者だけに制限する。
 func Save(path string, file File) error {
+	defer invalidateUsersCache(path)
 	raw, err := yaml.Marshal(file)
 	if err != nil {
 		return fmt.Errorf("encode users: %w", err)

@@ -89,7 +89,7 @@ func TestBuildInfoAndIndexCacheBust(t *testing.T) {
 	if err := os.MkdirAll(staticDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	index := `<!doctype html><link rel="stylesheet" href="/static/app.css" /><script src="/static/build-info.js"></script><script src="/static/app.js"></script>`
+	index := `<!doctype html><link rel="stylesheet" href="/static/app.css" /><script type="importmap">{"imports":{"/static/js/api.js":"/static/js/api.js?v=__WCA_V__"}}</script><script src="/static/build-info.js"></script><script type="module" src="/static/app.js"></script>`
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte(index), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +116,13 @@ func TestBuildInfoAndIndexCacheBust(t *testing.T) {
 	}
 	indexBody, _ := io.ReadAll(indexRes.Body)
 	indexRes.Body.Close()
+	wantVersion := "abc1234-dirty-2026-01-02T03:04:05Z"
 	if indexRes.StatusCode != http.StatusOK ||
-		!bytes.Contains(indexBody, []byte(`/static/app.js?v=abc1234-dirty-2026-01-02T03:04:05Z`)) ||
-		!bytes.Contains(indexBody, []byte(`/static/app.css?v=abc1234-dirty-2026-01-02T03:04:05Z`)) ||
-		!bytes.Contains(indexBody, []byte(`/static/build-info.js?v=abc1234-dirty-2026-01-02T03:04:05Z`)) {
+		!bytes.Contains(indexBody, []byte(`/static/app.js?v=`+wantVersion)) ||
+		!bytes.Contains(indexBody, []byte(`/static/app.css?v=`+wantVersion)) ||
+		!bytes.Contains(indexBody, []byte(`/static/build-info.js?v=`+wantVersion)) ||
+		!bytes.Contains(indexBody, []byte(`/static/js/api.js?v=`+wantVersion)) ||
+		bytes.Contains(indexBody, []byte(`__WCA_V__`)) {
 		t.Fatalf("index = %d %s", indexRes.StatusCode, indexBody)
 	}
 }
