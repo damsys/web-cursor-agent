@@ -515,7 +515,18 @@ async function renderTerminal(projectId, chatId) {
       <div class="term-toast is-hidden" id="term-toast" role="status" aria-live="polite"></div>
       <form class="composer" id="composer">
         <textarea id="draft" placeholder="メッセージ"></textarea>
-        <button class="primary" type="submit">送信</button>
+        <div class="composer-actions">
+          <button
+            class="secondary speech-toggle"
+            id="speech-toggle"
+            type="button"
+            aria-label="音声入力"
+            aria-pressed="false"
+          >
+            音声
+          </button>
+          <button class="primary" type="submit">送信</button>
+        </div>
       </form>
       <button class="scroll-bottom is-hidden" id="scroll-bottom" type="button">末尾にスクロール</button>
       <div class="floats" id="floats">
@@ -618,6 +629,7 @@ async function renderTerminal(projectId, chatId) {
     unbindTouchGestures: null,
     unbindSelectOverlay: null,
     unbindFloatReveal: null,
+    abortSpeechInput: null,
     disposeScroll: () => scrollDisposable.dispose(),
     onVisibility: null,
     onOnline: null,
@@ -1327,6 +1339,125 @@ function bindDraftComposer(form) {
       draft.value = text;
     }
   });
+  bindSpeechInput(form, draft);
+}
+
+// Web Speech API のコンストラクタを返す。未対応なら null。
+function getSpeechRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+// 音声入力が使えない理由を日本語で返す。使えるときは空文字。
+function speechInputUnavailableReason() {
+  if (!window.isSecureContext) {
+    return "音声入力には HTTPS で開く必要があります";
+  }
+  if (!getSpeechRecognitionConstructor()) {
+    return "このブラウザは音声入力に対応していません";
+  }
+  return "";
+}
+
+// 下書き欄へ音声認識結果を書き込むトグルをバインドする。
+function bindSpeechInput(form, draft) {
+  const button = form.querySelector("#speech-toggle");
+  if (!button) {
+    return;
+  }
+  const unavailable = speechInputUnavailableReason();
+  if (unavailable) {
+    button.disabled = true;
+    button.title = unavailable;
+    return;
+  }
+  button.title = "音声入力";
+  const SpeechRecognition = getSpeechRecognitionConstructor();
+  let recognition = null;
+  let listening = false;
+  let prefix = "";
+
+  const setListening = (next) => {
+    listening = next;
+    button.classList.toggle("is-listening", next);
+    button.setAttribute("aria-pressed", next ? "true" : "false");
+    button.textContent = next ? "停止" : "音声";
+    button.title = next ? "音声入力を停止" : "音声入力";
+  };
+
+  const abortSpeechInput = () => {
+    if (!recognition) {
+      setListening(false);
+      return;
+    }
+    const active = recognition;
+    recognition = null;
+    try {
+      active.abort();
+    } catch (_error) {
+      // ignore
+    }
+    setListening(false);
+  };
+
+  if (terminalSession) {
+    terminalSession.abortSpeechInput = abortSpeechInput;
+  }
+
+  button.addEventListener("click", () => {
+    if (listening) {
+      try {
+        recognition?.stop();
+      } catch (_error) {
+        abortSpeechInput();
+      }
+      return;
+    }
+    recognition = new SpeechRecognition();
+    recognition.lang = "ja-JP";
+    // 長い下書きでも一息で止めない。停止はボタン操作に任せる。
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    prefix = draft.value;
+    if (prefix.length > 0 && !/\s$/.test(prefix)) {
+      prefix += " ";
+    }
+    recognition.onresult = (event) => {
+      let finalPart = "";
+      let interimPart = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalPart += transcript;
+        } else {
+          interimPart += transcript;
+        }
+      }
+      draft.value = prefix + finalPart + interimPart;
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "aborted" || event.error === "no-speech") {
+        return;
+      }
+      const messages = {
+        "not-allowed": "マイクの使用が許可されていません",
+        "service-not-allowed": "音声認識サービスを利用できません",
+        network: "音声認識のネットワークエラーです",
+      };
+      showTermToast(messages[event.error] || "音声入力でエラーが発生しました");
+    };
+    recognition.onend = () => {
+      recognition = null;
+      setListening(false);
+    };
+    try {
+      recognition.start();
+      setListening(true);
+    } catch (_error) {
+      recognition = null;
+      setListening(false);
+      showTermToast("音声入力を開始できませんでした");
+    }
+  });
 }
 
 function markSubmitCommitted() {
@@ -1474,6 +1605,9 @@ function destroyTerminal() {
   }
   if (terminalSession.unbindFloatReveal) {
     terminalSession.unbindFloatReveal();
+  }
+  if (terminalSession.abortSpeechInput) {
+    terminalSession.abortSpeechInput();
   }
   terminalSession.disposeScroll();
   const socket = terminalSession.socket;

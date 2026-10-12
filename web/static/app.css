@@ -133,6 +133,11 @@ a.primary {
   border: 1px solid var(--line);
 }
 
+.secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .stack {
   display: flex;
   flex-direction: column;
@@ -372,11 +377,23 @@ body.is-term-selecting {
   flex: 1;
 }
 
+.composer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.composer .speech-toggle.is-listening {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .floats {
   position: fixed;
   /* 入力欄の上に重ねず、画面右下へ置く。 */
   right: calc(8px + env(safe-area-inset-right));
-  bottom: calc(8px + 5.5rem + 24px + env(safe-area-inset-bottom));
+  /* 音声＋送信の縦並び composer の上に載らないよう余白を取る。 */
+  bottom: calc(8px + 7rem + 24px + env(safe-area-inset-bottom));
   z-index: 2;
   display: grid;
   grid-template-columns: repeat(3, 52px);
@@ -447,7 +464,7 @@ body.is-term-selecting {
 .scroll-bottom {
   position: fixed;
   left: calc(8px + env(safe-area-inset-left));
-  bottom: calc(8px + 5.5rem + 24px + env(safe-area-inset-bottom));
+  bottom: calc(8px + 7rem + 24px + env(safe-area-inset-bottom));
   z-index: 2;
   min-height: 44px;
   padding: 0.6rem 0.9rem;
