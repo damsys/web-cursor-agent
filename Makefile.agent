@@ -1,4 +1,4 @@
-.PHONY: help deps build test fmt web-deps web-build web-test web-fmt go-build go-test go-fmt install-service uninstall-service
+.PHONY: help deps build test fmt check web-deps web-build web-test web-fmt go-build go-test go-fmt go-vet install-service uninstall-service
 
 REPO_ROOT := $(abspath .)
 UNIT_SRC := deploy/systemd/web-cursor-agent.user.service
@@ -10,6 +10,7 @@ help:
 		'build             画面用資産の配置とサーバのビルドを行う' \
 		'test              フロントエンド資産と Go のテストを実行する' \
 		'fmt               スクリプトと Go のソースを整形する' \
+		'check             Go の静的検査 (go vet) を実行する' \
 		'install-service   systemd user サービスとして常駐起動する' \
 		'uninstall-service systemd user サービスを解除する'
 
@@ -20,6 +21,9 @@ build: web-build go-build
 test: web-test go-test
 
 fmt: web-fmt go-fmt
+
+# リファクタ途中のコンパイル確認など、test/build より軽い検査に使う。
+check: go-vet
 
 web-deps:
 	mise exec -- npm ci --prefix web
@@ -35,6 +39,9 @@ web-fmt: web-deps
 
 go-fmt:
 	mise exec -- gofmt -w cmd internal
+
+go-vet:
+	mise exec -- go vet ./...
 
 go-test:
 	mise exec -- go test ./...
