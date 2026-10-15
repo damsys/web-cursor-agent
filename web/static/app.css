@@ -258,8 +258,7 @@ a.primary {
   flex: 1;
   min-height: 0;
   padding: 4px;
-  /* 端末領域の縦ドラッグをブラウザのページスクロールではなく履歴遡りに使う。 */
-  touch-action: none;
+  overflow: hidden;
 }
 
 .term-wrap #term,
@@ -267,9 +266,30 @@ a.primary {
   height: 100%;
 }
 
-.term-wrap.is-selecting {
-  /* OS のテキスト選択・コールアウトを妨げない。 */
-  touch-action: auto;
+/* 履歴スクロールは透明 proxy に一本化し、xterm 純正バーは出さない。 */
+.term-wrap .xterm .xterm-scrollable-element > .scrollbar {
+  display: none !important;
+}
+
+.term-scroll-proxy {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  background: transparent;
+}
+
+.term-scroll-spacer {
+  width: 1px;
+  pointer-events: none;
+}
+
+.term-wrap.is-selecting .term-scroll-proxy {
+  /* 選択オーバーレイ表示中は下の端末を動かさない。 */
+  pointer-events: none;
 }
 
 dialog.term-select-overlay {
