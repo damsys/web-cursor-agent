@@ -817,6 +817,7 @@ export function isTerminalNearBottom(buffer) {
 
 // 透明なネイティブスクロール面の scrollTop と xterm の表示行を双方向同期する。
 // 慣性・ホイールはブラウザに任せ、選択面表示中は操作しない。
+// レイアウト由来の scroll は「バッファ高さ（scrollHeight）が変わったか」で切り分ける。
 export function bindTerminalScrollProxy(term, termWrap) {
   const proxy = termWrap.querySelector("#term-scroll-proxy");
   const spacer = termWrap.querySelector("#term-scroll-spacer");
@@ -827,11 +828,10 @@ export function bindTerminalScrollProxy(term, termWrap) {
   let applyingFromProxy = false;
   let applyingFromTerminal = false;
   let applyReleaseTimer = 0;
-  // 末尾追随中。スペーサー伸長で出る偽の scroll で解除しない。
+  // 末尾追随中。
   let stickToBottom = true;
-  // touch/wheel/pointer など実操作のあいだだけ proxy→xterm を許可する。
-  let userGesture = false;
-  let userGestureTimer = 0;
+  // 直近で観測した proxy の内容高さ。変化時の scroll はユーザー操作ではない。
+  let lastScrollHeight = 0;
 
   const measureCellHeight = () => {
     const screen = term.element?.querySelector(".xterm-screen");
@@ -852,31 +852,20 @@ export function bindTerminalScrollProxy(term, termWrap) {
     );
   };
 
-  const markUserGesture = () => {
-    userGesture = true;
-    if (userGestureTimer) {
-      window.clearTimeout(userGestureTimer);
-    }
-    // scrollend が来ない環境でも、操作後しばらくはジェスチャ扱いする。
-    userGestureTimer = window.setTimeout(() => {
-      userGestureTimer = 0;
-      userGesture = false;
-      if (stickToBottom) {
-        syncFromTerminal();
-      }
-    }, 180);
-  };
-
   const beginTerminalApply = () => {
     applyingFromTerminal = true;
     if (applyReleaseTimer) {
       window.clearTimeout(applyReleaseTimer);
     }
-    // スペーサー変更に続く遅延 scroll をユーザー操作と誤認しない。
+    // 高さ変更に続く遅延 scroll を、高さ不変のユーザー操作と誤認しない。
     applyReleaseTimer = window.setTimeout(() => {
       applyReleaseTimer = 0;
       applyingFromTerminal = false;
-    }, 50);
+    }, 100);
+  };
+
+  const rememberScrollHeight = () => {
+    lastScrollHeight = proxy.scrollHeight;
   };
 
   const updateSpacerHeight = (cellHeight) => {
@@ -885,6 +874,7 @@ export function bindTerminalScrollProxy(term, termWrap) {
     if (spacer.style.height !== nextHeight) {
       spacer.style.height = nextHeight;
     }
+    rememberScrollHeight();
   };
 
   const snapTerminalToBottom = () => {
@@ -894,6 +884,23 @@ export function bindTerminalScrollProxy(term, termWrap) {
     }
     applyingFromProxy = true;
     term.scrollToBottom();
+    applyingFromProxy = false;
+  };
+
+  const applyProxyLine = (cellHeight) => {
+    stickToBottom = isProxyNearBottom(cellHeight);
+    const buffer = term.buffer.active;
+    const line = stickToBottom
+      ? buffer.baseY
+      : Math.max(
+          0,
+          Math.min(buffer.baseY, Math.round(proxy.scrollTop / cellHeight)),
+        );
+    if (line === buffer.viewportY) {
+      return;
+    }
+    applyingFromProxy = true;
+    term.scrollToLine(line);
     applyingFromProxy = false;
   };
 
@@ -916,8 +923,10 @@ export function bindTerminalScrollProxy(term, termWrap) {
     if (stickToBottom) {
       snapTerminalToBottom();
       proxy.scrollTop = maxProxyScrollTop();
+      rememberScrollHeight();
     } else if (options.forcePosition) {
       proxy.scrollTop = buffer.viewportY * cellHeight;
+      rememberScrollHeight();
     }
   };
 
@@ -927,11 +936,6 @@ export function bindTerminalScrollProxy(term, termWrap) {
       return;
     }
     stickToBottom = true;
-    userGesture = false;
-    if (userGestureTimer) {
-      window.clearTimeout(userGestureTimer);
-      userGestureTimer = 0;
-    }
     const cellHeight = measureCellHeight();
     beginTerminalApply();
     if (cellHeight > 0) {
@@ -939,6 +943,7 @@ export function bindTerminalScrollProxy(term, termWrap) {
     }
     term.scrollToBottom();
     proxy.scrollTop = maxProxyScrollTop();
+    rememberScrollHeight();
   };
 
   const onProxyScroll = () => {
@@ -949,41 +954,27 @@ export function bindTerminalScrollProxy(term, termWrap) {
     if (!(cellHeight > 0)) {
       return;
     }
-    // スペーサー伸長などで出た scroll は無視し、追随中なら末尾へ戻す。
-    if (!userGesture) {
+    const scrollHeight = proxy.scrollHeight;
+    // バッファ（スペーサー）高さ変化に伴う scroll は位置換算しない。
+    if (scrollHeight !== lastScrollHeight) {
+      lastScrollHeight = scrollHeight;
       if (stickToBottom) {
         beginTerminalApply();
         proxy.scrollTop = maxProxyScrollTop();
+        rememberScrollHeight();
       }
       return;
     }
-    stickToBottom = isProxyNearBottom(cellHeight);
-    const buffer = term.buffer.active;
-    const line = stickToBottom
-      ? buffer.baseY
-      : Math.max(
-          0,
-          Math.min(buffer.baseY, Math.round(proxy.scrollTop / cellHeight)),
-        );
-    if (line === buffer.viewportY) {
-      return;
-    }
-    applyingFromProxy = true;
-    term.scrollToLine(line);
-    applyingFromProxy = false;
+    // 高さが変わっていない → ドラッグ・慣性・ホイールによる位置変更。
+    applyProxyLine(cellHeight);
   };
 
   const onProxyScrollEnd = () => {
-    userGesture = false;
-    if (userGestureTimer) {
-      window.clearTimeout(userGestureTimer);
-      userGestureTimer = 0;
-    }
     const cellHeight = measureCellHeight();
     if (cellHeight > 0 && isProxyNearBottom(cellHeight)) {
       stickToBottom = true;
+      syncFromTerminal();
     }
-    syncFromTerminal();
   };
 
   const onTerminalScroll = () => {
@@ -999,9 +990,6 @@ export function bindTerminalScrollProxy(term, termWrap) {
 
   proxy.addEventListener("scroll", onProxyScroll, { passive: true });
   proxy.addEventListener("scrollend", onProxyScrollEnd);
-  proxy.addEventListener("touchstart", markUserGesture, { passive: true });
-  proxy.addEventListener("wheel", markUserGesture, { passive: true });
-  proxy.addEventListener("pointerdown", markUserGesture, { passive: true });
   const scrollDisposable = term.onScroll(onTerminalScroll);
   const writeDisposable = term.onWriteParsed(onWriteParsed);
   if (state.terminalSession) {
@@ -1011,17 +999,11 @@ export function bindTerminalScrollProxy(term, termWrap) {
   syncFromTerminal();
 
   return () => {
-    if (userGestureTimer) {
-      window.clearTimeout(userGestureTimer);
-    }
     if (applyReleaseTimer) {
       window.clearTimeout(applyReleaseTimer);
     }
     proxy.removeEventListener("scroll", onProxyScroll);
     proxy.removeEventListener("scrollend", onProxyScrollEnd);
-    proxy.removeEventListener("touchstart", markUserGesture);
-    proxy.removeEventListener("wheel", markUserGesture);
-    proxy.removeEventListener("pointerdown", markUserGesture);
     scrollDisposable.dispose();
     writeDisposable.dispose();
     if (state.terminalSession?.syncScrollProxy === syncFromTerminal) {
