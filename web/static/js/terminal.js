@@ -832,6 +832,10 @@ export function bindTerminalScrollProxy(term, termWrap) {
   let stickToBottom = true;
   // 直近で観測した proxy の内容高さ。変化時の scroll はユーザー操作ではない。
   let lastScrollHeight = 0;
+  // proxy がタップを奪うため、スクロールでない指上げだけ xterm へクリック相当を転送する。
+  const tapSlopPx = 10;
+  let pointerDownAt = null;
+  let scrolledDuringPointer = false;
 
   const measureCellHeight = () => {
     const screen = term.element?.querySelector(".xterm-screen");
@@ -950,6 +954,9 @@ export function bindTerminalScrollProxy(term, termWrap) {
     if (applyingFromTerminal || state.terminalSession?.selectOverlayOpen) {
       return;
     }
+    if (pointerDownAt) {
+      scrolledDuringPointer = true;
+    }
     const cellHeight = measureCellHeight();
     if (!(cellHeight > 0)) {
       return;
@@ -977,6 +984,80 @@ export function bindTerminalScrollProxy(term, termWrap) {
     }
   };
 
+  // OSC 8 リンクなどは screen 上の mousemove→mousedown→mouseup で発火する。
+  const forwardTapToXterm = (clientX, clientY) => {
+    const screen = term.element?.querySelector(".xterm-screen") || term.element;
+    if (!screen) {
+      return;
+    }
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX,
+      clientY,
+      button: 0,
+    };
+    screen.dispatchEvent(new MouseEvent("mousemove", { ...base, buttons: 0 }));
+    screen.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 1 }));
+    screen.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+  };
+
+  const onProxyPointerDown = (event) => {
+    if (!event.isPrimary || event.button !== 0) {
+      return;
+    }
+    pointerDownAt = { x: event.clientX, y: event.clientY };
+    scrolledDuringPointer = false;
+  };
+
+  const onProxyPointerUp = (event) => {
+    if (!pointerDownAt || !event.isPrimary) {
+      pointerDownAt = null;
+      return;
+    }
+    const start = pointerDownAt;
+    pointerDownAt = null;
+    if (scrolledDuringPointer || state.terminalSession?.selectOverlayOpen) {
+      return;
+    }
+    const dx = event.clientX - start.x;
+    const dy = event.clientY - start.y;
+    if (dx * dx + dy * dy > tapSlopPx * tapSlopPx) {
+      return;
+    }
+    forwardTapToXterm(event.clientX, event.clientY);
+  };
+
+  const onProxyPointerCancel = () => {
+    pointerDownAt = null;
+  };
+
+  // デスクトップでリンクホバーの下線・カーソルが出るよう、移動を xterm へ伝える。
+  const onProxyMouseMove = (event) => {
+    if (
+      event.buttons !== 0 ||
+      applyingFromTerminal ||
+      state.terminalSession?.selectOverlayOpen
+    ) {
+      return;
+    }
+    const screen = term.element?.querySelector(".xterm-screen") || term.element;
+    if (!screen) {
+      return;
+    }
+    screen.dispatchEvent(
+      new MouseEvent("mousemove", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        buttons: 0,
+      }),
+    );
+  };
+
   const onTerminalScroll = () => {
     if (applyingFromProxy) {
       return;
@@ -990,6 +1071,12 @@ export function bindTerminalScrollProxy(term, termWrap) {
 
   proxy.addEventListener("scroll", onProxyScroll, { passive: true });
   proxy.addEventListener("scrollend", onProxyScrollEnd);
+  proxy.addEventListener("pointerdown", onProxyPointerDown, { passive: true });
+  proxy.addEventListener("pointerup", onProxyPointerUp, { passive: true });
+  proxy.addEventListener("pointercancel", onProxyPointerCancel, {
+    passive: true,
+  });
+  proxy.addEventListener("mousemove", onProxyMouseMove, { passive: true });
   const scrollDisposable = term.onScroll(onTerminalScroll);
   const writeDisposable = term.onWriteParsed(onWriteParsed);
   if (state.terminalSession) {
@@ -1004,6 +1091,10 @@ export function bindTerminalScrollProxy(term, termWrap) {
     }
     proxy.removeEventListener("scroll", onProxyScroll);
     proxy.removeEventListener("scrollend", onProxyScrollEnd);
+    proxy.removeEventListener("pointerdown", onProxyPointerDown);
+    proxy.removeEventListener("pointerup", onProxyPointerUp);
+    proxy.removeEventListener("pointercancel", onProxyPointerCancel);
+    proxy.removeEventListener("mousemove", onProxyMouseMove);
     scrollDisposable.dispose();
     writeDisposable.dispose();
     if (state.terminalSession?.syncScrollProxy === syncFromTerminal) {
