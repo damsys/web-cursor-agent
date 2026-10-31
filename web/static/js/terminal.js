@@ -12,6 +12,25 @@ import {
   clearAttachID,
 } from "/static/js/attach.js";
 
+// サーバの statusPreempted と同じ。別画面にセッションを譲って切られた。
+const TERMINAL_CLOSE_PREEMPTED = 4000;
+
+const PREEMPT_TOAST =
+  "ほかの画面から同じセッションに接続されたため、こちらの接続を切りました。再接続するにはページを再読み込みしてください。";
+
+// markTerminalPreempted は別接続に譲ったあとの自動再接続を止め、理由を残す。
+function markTerminalPreempted() {
+  if (!state.terminalSession) {
+    return;
+  }
+  state.terminalSession.preempted = true;
+  if (state.terminalSession.reconnectTimer) {
+    window.clearTimeout(state.terminalSession.reconnectTimer);
+    state.terminalSession.reconnectTimer = null;
+  }
+  showTermToast(PREEMPT_TOAST);
+}
+
 export function bindTerminalChat(chatId) {
   if (
     !state.terminalSession ||
@@ -172,6 +191,8 @@ export async function renderTerminal(projectId, chatId) {
     hidden: false,
     leaving: false,
     agentExited: false,
+    // 別画面に接続を譲った。自動再接続せず、再読み込みでのみ戻す。
+    preempted: false,
     selectOverlayOpen: false,
     showSelectOverlay: null,
     hideSelectOverlay: null,
@@ -251,7 +272,8 @@ export function connectTerminal() {
   if (
     !state.terminalSession ||
     state.terminalSession.leaving ||
-    state.terminalSession.agentExited
+    state.terminalSession.agentExited ||
+    state.terminalSession.preempted
   ) {
     return;
   }
@@ -354,6 +376,10 @@ export function connectTerminal() {
         bindTerminalChat(message.chat || "");
         return;
       }
+      if (message.type === "preempted") {
+        markTerminalPreempted();
+        return;
+      }
       if (message.type === "exit") {
         state.terminalSession.agentExited = true;
         clearAttachID(projectId, state.terminalSession.chatId);
@@ -364,11 +390,18 @@ export function connectTerminal() {
     }
     term.write(new Uint8Array(event.data));
   });
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", (event) => {
     if (!state.terminalSession || state.terminalSession.socket !== socket) {
       return;
     }
     state.terminalSession.socket = null;
+    if (
+      state.terminalSession.preempted ||
+      event.code === TERMINAL_CLOSE_PREEMPTED
+    ) {
+      markTerminalPreempted();
+      return;
+    }
     if (state.terminalSession.leaving || state.terminalSession.agentExited) {
       return;
     }
@@ -432,7 +465,8 @@ export function scheduleTerminalReconnect(delayMs) {
   if (
     !state.terminalSession ||
     state.terminalSession.leaving ||
-    state.terminalSession.agentExited
+    state.terminalSession.agentExited ||
+    state.terminalSession.preempted
   ) {
     return;
   }
@@ -443,7 +477,8 @@ export function scheduleTerminalReconnect(delayMs) {
     if (
       !state.terminalSession ||
       state.terminalSession.leaving ||
-      state.terminalSession.agentExited
+      state.terminalSession.agentExited ||
+      state.terminalSession.preempted
     ) {
       return;
     }
@@ -455,7 +490,8 @@ export function reconnectTerminal() {
   if (
     !state.terminalSession ||
     state.terminalSession.leaving ||
-    state.terminalSession.agentExited
+    state.terminalSession.agentExited ||
+    state.terminalSession.preempted
   ) {
     return;
   }

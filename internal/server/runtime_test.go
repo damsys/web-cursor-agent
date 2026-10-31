@@ -66,6 +66,61 @@ func TestTerminalDetachAndReattach(t *testing.T) {
 	waitOutputContains(t, ctx, conn2, "again")
 }
 
+func TestTerminalPreemptKeepsNewClient(t *testing.T) {
+	srv, ts := testServer(t)
+	srv.cfg.DetachGrace = time.Minute
+	defer ts.Close()
+	defer srv.Close()
+
+	cookie := loginCookie(t, ts)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn1 := dialTerminal(t, ctx, ts, cookie, "project=app")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	hello := readJSONMessage(t, ctx, conn1)
+	attach, _ := hello["attach"].(string)
+	if attach == "" {
+		t.Fatal("missing attach id")
+	}
+
+	conn2 := dialTerminal(t, ctx, ts, cookie, "project=app&attach="+attach)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	if notice := waitJSONMessage(t, ctx, conn1, "preempted"); notice["type"] != "preempted" {
+		t.Fatalf("preempted = %#v", notice)
+	}
+	// クローズコードか、コードを書けないまま切れたかのどちらでも、先の接続は終わっている。
+	var closeErr error
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		readCtx, readCancel := context.WithTimeout(ctx, time.Second)
+		_, _, closeErr = conn1.Read(readCtx)
+		readCancel()
+		if closeErr != nil {
+			break
+		}
+	}
+	if closeErr == nil {
+		t.Fatal("previous connection still open")
+	}
+	if status := websocket.CloseStatus(closeErr); status != statusPreempted && status != -1 {
+		t.Fatalf("close status = %v err = %v", status, closeErr)
+	}
+
+	hello2 := readJSONMessage(t, ctx, conn2)
+	if hello2["attach"] != attach {
+		t.Fatalf("second hello = %#v", hello2)
+	}
+	if _, ok := srv.runtimes.Lookup(attach, "alice"); !ok {
+		t.Fatal("runtime should remain with the new client")
+	}
+	if err := conn2.Write(ctx, websocket.MessageText, []byte(`{"type":"input","data":"still-here\n"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitOutputContains(t, ctx, conn2, "still-here")
+}
+
 func TestTerminalReplayScrollbackOnReattach(t *testing.T) {
 	srv, ts := testServer(t)
 	srv.cfg.DetachGrace = time.Minute

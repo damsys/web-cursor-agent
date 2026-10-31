@@ -38,6 +38,8 @@ type runtimeSession struct {
 	graceTimer     *time.Timer
 	closed         bool
 	readerDone     chan struct{}
+	// attachGen は出力先を付けた回数。古い接続の切断処理が、後から付いた接続を外さないために使う。
+	attachGen uint64
 }
 
 // agentStatus は CLI 端末タイトルから得た対話状態とセッション概要である。
@@ -224,13 +226,16 @@ func (rt *runtimeSession) deliver(payload []byte) {
 // AttachOutput は再接続用の出力を返し、以降の出力と状態変化を channel へ流す。
 // replay が true のときは保持している scrollback 全体を返す (ページ再読込向け)。
 // false のときは切断中に溜まった差分だけを返す (同一画面の再接続向け)。
-func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-chan []byte, status <-chan agentStatus, ok bool) {
+// gen は今回の接続世代。後から別の接続が付くと古くなり、その切断ではセッションを外さない。
+func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-chan []byte, status <-chan agentStatus, gen uint64, ok bool) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.closed {
-		return nil, nil, nil, false
+		return nil, nil, nil, 0, false
 	}
 	rt.stopGraceLocked()
+	rt.attachGen++
+	gen = rt.attachGen
 	if rt.sink != nil {
 		close(rt.sink)
 		rt.sink = nil
@@ -249,14 +254,22 @@ func (rt *runtimeSession) AttachOutput(replay bool) (buffered []byte, live <-cha
 	rt.sink = sink
 	statusSink := make(chan agentStatus, 1)
 	rt.statusSink = statusSink
-	return buffered, sink, statusSink, true
+	return buffered, sink, statusSink, gen, true
+}
+
+// attachmentReplaced は、gen より新しい接続が出力先を取ったかを返す。
+func (rt *runtimeSession) attachmentReplaced(gen uint64) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.attachGen != gen
 }
 
 // DetachOutput は WebSocket 切断後も agent を残し、出力をバッファへ回す。
-func (rt *runtimeSession) DetachOutput() {
+// すでに別接続が付いていれば何もしない。古い切断が新しい接続を外すと、双方が再接続し合う。
+func (rt *runtimeSession) DetachOutput(gen uint64) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.closed {
+	if rt.closed || rt.attachGen != gen {
 		return
 	}
 	if rt.sink != nil {

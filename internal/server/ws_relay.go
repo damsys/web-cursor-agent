@@ -13,6 +13,10 @@ import (
 	"web-cursor-agent/internal/cursor"
 )
 
+// statusPreempted は、別画面が同じセッションへ接続したため切ったことを伝える。
+// 4000 番台は WebSocket の私用クローズコード。クライアントはこのコードでは自動再接続しない。
+const statusPreempted websocket.StatusCode = 4000
+
 func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.currentUser(w, r)
 	if !ok {
@@ -123,7 +127,11 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	conn.SetReadLimit(maxInputBytes + 1024)
 	// ページ再読込など空の端末向け。同一画面の再接続では付けず、差分だけを受け取る。
 	replay := r.URL.Query().Get("replay") == "1"
-	intentionalClose, agentExited := s.relay(r.Context(), conn, rt, replay)
+	gen, intentionalClose, agentExited, replaced := s.relay(r.Context(), conn, rt, replay)
+	if replaced {
+		log.Printf("agent preempted user=%s project=%s runtime=%s", user.Username, project.ID, rt.id)
+		return
+	}
 	if agentExited {
 		log.Printf("agent stopped user=%s project=%s chat=%s runtime=%s code=%d", user.Username, project.ID, chatID, rt.id, rt.ExitCode())
 		return
@@ -133,32 +141,48 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		rt.Terminate()
 		return
 	}
-	rt.DetachOutput()
+	rt.DetachOutput(gen)
 	log.Printf("agent detached user=%s project=%s runtime=%s intentional=%v activity=%v", user.Username, project.ID, rt.id, intentionalClose, rt.Activity())
 }
 
-func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSession, replay bool) (intentionalClose bool, agentExited bool) {
+func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSession, replay bool) (gen uint64, intentionalClose bool, agentExited bool, replaced bool) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	buffered, live, statusLive, ok := rt.AttachOutput(replay)
+	var (
+		writeMu     sync.Mutex
+		exited      bool
+		exitMu      sync.Mutex
+		closeStatus = websocket.StatusNormalClosure
+		closeReason string
+	)
+	defer func() {
+		exitMu.Lock()
+		status := closeStatus
+		reason := closeReason
+		exitMu.Unlock()
+		_ = conn.Close(status, reason)
+	}()
+
+	var ok bool
+	buffered, live, statusLive, gen, ok := rt.AttachOutput(replay)
 	if !ok {
 		payload, _ := json.Marshal(map[string]any{"type": "exit", "code": rt.ExitCode()})
 		writeCtx, writeCancel := context.WithTimeout(ctx, 5*time.Second)
 		_ = conn.Write(writeCtx, websocket.MessageText, payload)
 		writeCancel()
-		return false, true
+		return gen, false, true, false
 	}
-
-	var (
-		writeMu sync.Mutex
-		exited  bool
-		exitMu  sync.Mutex
-	)
 	setExited := func() {
 		exitMu.Lock()
 		exited = true
+		exitMu.Unlock()
+	}
+	setReplaced := func() {
+		exitMu.Lock()
+		replaced = true
+		closeStatus = statusPreempted
+		closeReason = "preempted"
 		exitMu.Unlock()
 	}
 	write := func(typ websocket.MessageType, data []byte) error {
@@ -179,11 +203,11 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 	}
 	hello, _ := json.Marshal(helloBody)
 	if err := write(websocket.MessageText, hello); err != nil {
-		return false, false
+		return gen, false, false, false
 	}
 	if len(buffered) > 0 {
 		if err := write(websocket.MessageBinary, buffered); err != nil {
-			return false, false
+			return gen, false, false, false
 		}
 	}
 
@@ -234,7 +258,17 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 				}
 			case payload, open := <-live:
 				if !open {
-					// detach/reattach でも sink は閉じる。プロセス終了時だけ exit を送る。
+					// 別画面が同じセッションへ接続すると sink が閉じる。終了ではなく譲ったと伝える。
+					// Read が readMu を持ったまま Close するとハンドシェイクで止まるため、
+					// 通知を書いてから context を消し、クローズコードは戻り側の Close に任せる。
+					if rt.attachmentReplaced(gen) {
+						setReplaced()
+						notice, _ := json.Marshal(map[string]any{"type": "preempted"})
+						_ = write(websocket.MessageText, notice)
+						cancel()
+						return
+					}
+					// 自接続の detach やプロセス終了でも sink は閉じる。終了時だけ exit を送る。
 					select {
 					case <-rt.Done():
 					case <-time.After(200 * time.Millisecond):
@@ -259,8 +293,9 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 		if err != nil {
 			exitMu.Lock()
 			agentExited = exited
+			replacedNow := replaced
 			exitMu.Unlock()
-			return intentionalClose, agentExited
+			return gen, intentionalClose, agentExited, replacedNow
 		}
 		var message struct {
 			Type string `json:"type"`
@@ -280,15 +315,16 @@ func (s *Server) relay(ctx context.Context, conn *websocket.Conn, rt *runtimeSes
 				log.Printf("write pty: %v", err)
 				exitMu.Lock()
 				agentExited = exited
+				replacedNow := replaced
 				exitMu.Unlock()
-				return intentionalClose, agentExited
+				return gen, intentionalClose, agentExited, replacedNow
 			}
 		case "resize":
 			if err := rt.Resize(message.Cols, message.Rows); err != nil {
 				log.Printf("resize pty: %v", err)
 			}
 		case "close":
-			return true, false
+			return gen, true, false, false
 		}
 	}
 }
