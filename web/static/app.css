@@ -264,6 +264,8 @@ a.primary {
 .term-wrap #term,
 .term-wrap .xterm {
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* 履歴スクロールは透明 proxy に一本化し、xterm 純正バーは出さない。 */
@@ -271,11 +273,19 @@ a.primary {
   display: none !important;
 }
 
+/* ネイティブの viewport スクロールバーは履歴が長いときだけ幅を奪い、
+   行数計算と高さが往復する。スクロールは proxy 側なので隠す。 */
+.term-wrap .xterm .xterm-viewport {
+  overflow: hidden !important;
+}
+
 .term-scroll-proxy {
   position: absolute;
   inset: 0;
   z-index: 1;
-  overflow: auto;
+  /* 縦バー出現で幅が縮み、横バーが clientHeight を減らす往復を防ぐ。 */
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;

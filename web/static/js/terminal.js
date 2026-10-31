@@ -191,6 +191,8 @@ export async function renderTerminal(projectId, chatId) {
     unbindFloatReveal: null,
     abortSpeechInput: null,
     resizeObserver: null,
+    // 直前に fit した端末枠。同じ寸法への再 fit は行数の往復になるため捨てる。
+    lastFitBox: null,
     disposeScroll: () => scrollDisposable.dispose(),
     onVisibility: null,
     onOnline: null,
@@ -811,6 +813,47 @@ export function layoutSelectOverlay(overlay) {
 // proxy と xterm の行換算で末尾が 1〜2 行ずれることがあるため、この範囲は末尾扱いする。
 const TERMINAL_BOTTOM_LINE_SLOP = 2;
 
+// セル高の揺れを吸収するとき、直近何回分を見るか。
+const CELL_HEIGHT_SAMPLE_COUNT = 4;
+
+// 画面高に換算してこの範囲内の差は、リサイズではなく計測ノイズとみなす。
+const CELL_HEIGHT_NOISE_PX = 2;
+
+// xterm が scrollToLine に使う CSS セル高を返す。
+// screen.clientHeight はスクロールバーや小数ピクセルで 1px 揺れることがあり、
+// 履歴の行数を掛けるとスペーサーとスクロールバーが振動する。
+function readRawCellHeight(term) {
+  const cssHeight = term._core?._renderService?.dimensions?.css?.cell?.height;
+  if (typeof cssHeight === "number" && cssHeight > 0) {
+    return cssHeight;
+  }
+  const screen = term.element?.querySelector(".xterm-screen");
+  const height = screen?.clientHeight || 0;
+  if (!(height > 0) || !(term.rows > 0)) {
+    return 0;
+  }
+  return height / term.rows;
+}
+
+// 直近サンプルから、スペーサー計算に使うセル高を決める。
+// ノイズ幅の中では最大値を使う。小さめの値でスペーサーが縮むと
+// スクロールバーが消えて高さが戻り、振動が続くため。
+// ノイズ幅を外れたスパイクは中央値側を残し、過大な計測で固定しない。
+function stabilizeCellHeight(samples, rows) {
+  const finite = samples.filter((value) => value > 0);
+  if (finite.length === 0) {
+    return 0;
+  }
+  const sorted = [...finite].sort((left, right) => left - right);
+  const median = sorted[Math.floor((sorted.length - 1) / 2)];
+  const rowCount = Math.max(rows, 1);
+  const plausible = finite.filter(
+    (value) => Math.abs(value - median) * rowCount <= CELL_HEIGHT_NOISE_PX,
+  );
+  const pool = plausible.length > 0 ? plausible : [median];
+  return Math.max(...pool);
+}
+
 export function isTerminalNearBottom(buffer) {
   return buffer.baseY - buffer.viewportY <= TERMINAL_BOTTOM_LINE_SLOP;
 }
@@ -836,14 +879,28 @@ export function bindTerminalScrollProxy(term, termWrap) {
   const tapSlopPx = 10;
   let pointerDownAt = null;
   let scrolledDuringPointer = false;
+  // セル高の直近計測。振動中は最大値へ寄せてスペーサー高を固定する。
+  const cellHeightSamples = [];
 
   const measureCellHeight = () => {
-    const screen = term.element?.querySelector(".xterm-screen");
-    const height = screen?.clientHeight || 0;
-    if (!(height > 0) || !(term.rows > 0)) {
+    const measured = readRawCellHeight(term);
+    if (!(measured > 0)) {
       return 0;
     }
-    return height / term.rows;
+    cellHeightSamples.push(measured);
+    if (cellHeightSamples.length > CELL_HEIGHT_SAMPLE_COUNT) {
+      cellHeightSamples.shift();
+    }
+    return stabilizeCellHeight(cellHeightSamples, term.rows);
+  };
+
+  const assignProxyScrollTop = (top) => {
+    const next = Math.max(0, top);
+    // 1px 以内の書き戻しは scroll イベントを連発させるだけなので捨てる。
+    if (Math.abs(proxy.scrollTop - next) <= 1) {
+      return;
+    }
+    proxy.scrollTop = next;
   };
 
   const maxProxyScrollTop = () =>
@@ -874,7 +931,8 @@ export function bindTerminalScrollProxy(term, termWrap) {
 
   const updateSpacerHeight = (cellHeight) => {
     const buffer = term.buffer.active;
-    const nextHeight = `${Math.max(buffer.length, term.rows) * cellHeight}px`;
+    // 小数 px のままだとブラウザの丸めで scrollHeight が 1px 往復する。
+    const nextHeight = `${Math.round(Math.max(buffer.length, term.rows) * cellHeight)}px`;
     if (spacer.style.height !== nextHeight) {
       spacer.style.height = nextHeight;
     }
@@ -926,10 +984,10 @@ export function bindTerminalScrollProxy(term, termWrap) {
     updateSpacerHeight(cellHeight);
     if (stickToBottom) {
       snapTerminalToBottom();
-      proxy.scrollTop = maxProxyScrollTop();
+      assignProxyScrollTop(maxProxyScrollTop());
       rememberScrollHeight();
     } else if (options.forcePosition) {
-      proxy.scrollTop = buffer.viewportY * cellHeight;
+      assignProxyScrollTop(buffer.viewportY * cellHeight);
       rememberScrollHeight();
     }
   };
@@ -946,7 +1004,7 @@ export function bindTerminalScrollProxy(term, termWrap) {
       updateSpacerHeight(cellHeight);
     }
     term.scrollToBottom();
-    proxy.scrollTop = maxProxyScrollTop();
+    assignProxyScrollTop(maxProxyScrollTop());
     rememberScrollHeight();
   };
 
@@ -967,7 +1025,7 @@ export function bindTerminalScrollProxy(term, termWrap) {
       lastScrollHeight = scrollHeight;
       if (stickToBottom) {
         beginTerminalApply();
-        proxy.scrollTop = maxProxyScrollTop();
+        assignProxyScrollTop(maxProxyScrollTop());
         rememberScrollHeight();
       }
       return;
@@ -1110,8 +1168,33 @@ export function fitTerminal() {
   if (!state.terminalSession) {
     return;
   }
-  state.terminalSession.fit.fit();
+  const frame = state.terminalSession.term.element?.parentElement;
+  const rect = frame?.getBoundingClientRect();
+  const width = Math.round(rect?.width || 0);
+  const height = Math.round(rect?.height || 0);
+  const last = state.terminalSession.lastFitBox;
+  // 枠サイズが同じ再入は、計測の 1px 揺れで rows が往復する原因になる。
+  const frameUnchanged =
+    width > 0 &&
+    height > 0 &&
+    last &&
+    Math.abs(width - last.width) <= 1 &&
+    Math.abs(height - last.height) <= 1;
+  if (!frameUnchanged) {
+    state.terminalSession.fit.fit();
+    // fit 後はセル高が変わるので、追随中は末尾、閲覧中は viewport に合わせる。
+    state.terminalSession.syncScrollProxy?.({ forcePosition: true });
+    if (frame && width > 0 && height > 0) {
+      // fit 後の寸法を記録し、スクロールバー出現による同じ枠への再 fit を止める。
+      const fitted = frame.getBoundingClientRect();
+      state.terminalSession.lastFitBox = {
+        width: Math.round(fitted.width),
+        height: Math.round(fitted.height),
+      };
+    }
+  }
   // 接続前や再接続待ちでは socket が null になり得る。
+  // 枠が変わっていなくても、接続直後の通知はここを通る。
   if (state.terminalSession.socket?.readyState === WebSocket.OPEN) {
     state.terminalSession.socket.send(
       JSON.stringify({
@@ -1121,8 +1204,6 @@ export function fitTerminal() {
       }),
     );
   }
-  // fit 後はセル高が変わるので、追随中は末尾、閲覧中は viewport に合わせる。
-  state.terminalSession.syncScrollProxy?.({ forcePosition: true });
 }
 
 export function bindDraftComposer(form) {
